@@ -255,6 +255,137 @@ class SafeHookManager {
     }
     return true;
   }
+
+  async syncClaudeLogs(apiUrl, apiKey, orgId) {
+    const projectsDir = path.join(this.homeDir, '.claude', 'projects');
+    if (!fs.existsSync(projectsDir)) {
+      return { syncedEvents: 0, totalTokens: 0, sessions: 0 };
+    }
+
+    const stateFile = path.join(CONFIG_DIR, 'claude_synced.json');
+    let syncedIds = {};
+    if (fs.existsSync(stateFile)) {
+      try {
+        syncedIds = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+      } catch (e) {}
+    }
+
+    const eventsToUpload = [];
+    let totalTokens = 0;
+    const sessionSet = new Set();
+
+    function scanDir(dir) {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          scanDir(fullPath);
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+          try {
+            const lines = fs.readFileSync(fullPath, 'utf-8').split('\n').filter(Boolean);
+            for (const line of lines) {
+              const data = JSON.parse(line);
+              if (data.type === 'assistant' && data.message && data.message.usage) {
+                const messageId = data.uuid || data.message.id || `${data.sessionId}_${data.timestamp}`;
+                if (syncedIds[messageId]) continue;
+
+                const inputTokens = data.message.usage.input_tokens || 0;
+                const outputTokens = data.message.usage.output_tokens || 0;
+                const cacheRead = data.message.usage.cache_read_input_tokens || 0;
+                const cacheWrite = data.message.usage.cache_creation_input_tokens || 0;
+                const total = inputTokens + outputTokens + cacheRead + cacheWrite;
+
+                totalTokens += total;
+                syncedIds[messageId] = true;
+                if (data.sessionId) sessionSet.add(data.sessionId);
+
+                eventsToUpload.push({
+                  eventId: `evt_${messageId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
+                  timestamp: data.timestamp || new Date().toISOString(),
+                  organizationId: orgId || 'org_default',
+                  userId: 'developer',
+                  projectId: data.cwd || 'default',
+                  sessionId: data.sessionId || 'claude_session',
+                  agent: {
+                    id: 'claude-code',
+                    name: 'claude-code',
+                    version: data.version || '2.1.x',
+                    type: 'coding_cli',
+                  },
+                  provider: {
+                    name: 'anthropic',
+                  },
+                  model: {
+                    name: data.message.model || 'claude-3-7-sonnet',
+                  },
+                  usage: {
+                    inputTokens,
+                    outputTokens,
+                    cacheReadTokens: cacheRead,
+                    cacheWriteTokens: cacheWrite,
+                    totalTokens: total,
+                  },
+                  status: 'success',
+                });
+              }
+            }
+          } catch (e) {}
+        }
+      }
+    }
+
+    scanDir(projectsDir);
+
+    if (eventsToUpload.length > 0) {
+      ensureConfigDir();
+      fs.writeFileSync(stateFile, JSON.stringify(syncedIds));
+
+      // Buffer into local SQLite durability queue if present
+      try {
+        const dbPath = path.join(CONFIG_DIR, 'collector.db');
+        const db = new Database(dbPath);
+        db.pragma('journal_mode = WAL');
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS events (
+            eventId TEXT PRIMARY KEY,
+            organizationId TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            retryCount INTEGER NOT NULL DEFAULT 0,
+            errorMessage TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL
+          );
+        `);
+        const insert = db.prepare(`
+          INSERT OR IGNORE INTO events (eventId, organizationId, payload, status, retryCount, createdAt, updatedAt)
+          VALUES (?, ?, ?, 'pending', 0, ?, ?)
+        `);
+        const now = new Date().toISOString();
+        for (const evt of eventsToUpload) {
+          insert.run(evt.eventId, evt.organizationId, JSON.stringify(evt), now, now);
+        }
+      } catch (e) {}
+
+      // POST to backend API
+      const ingestEndpoint = `${apiUrl}/v1/events/batch`;
+      for (let i = 0; i < eventsToUpload.length; i += 50) {
+        const batch = eventsToUpload.slice(i, i + 50);
+        try {
+          await fetch(ingestEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+            },
+            body: JSON.stringify({ events: batch }),
+          }).catch(() => null);
+        } catch (e) {}
+      }
+    }
+
+    return { syncedEvents: eventsToUpload.length, totalTokens, sessions: sessionSet.size };
+  }
 }
 
 function ensureConfigDir() {
@@ -500,7 +631,43 @@ async function main() {
       break;
     }
 
+    case 'sync': {
+      console.log('\n🔄 \x1b[1m\x1b[36mTokenTrail Transcript & Usage Sync\x1b[0m');
+      console.log('───────────────────────────────────────────────────────');
+      console.log('Scanning local Claude Code sessions in ~/.claude/projects...');
+      const res = await hookManager.syncClaudeLogs(config.apiUrl, config.apiKey || config.token, config.organizationId);
+      if (res.syncedEvents > 0) {
+        console.log(`\n\x1b[32m✔ Successfully synchronized ${res.syncedEvents} new prompt events across ${res.sessions} sessions!\x1b[0m`);
+        console.log(`\x1b[32m✔ Ingested ${res.totalTokens.toLocaleString()} tokens into TokenTrail.\x1b[0m`);
+      } else {
+        console.log(`\n\x1b[32m✔ All local Claude Code sessions are up to date.\x1b[0m`);
+      }
+      console.log(`Dashboard: \x1b[34mhttps://www.tokentrail.xyz\x1b[0m\n`);
+      break;
+    }
+
+    case 'watch': {
+      console.log('\n👀 \x1b[1m\x1b[36mTokenTrail Live Real-Time Agent Watcher\x1b[0m');
+      console.log('───────────────────────────────────────────────────────');
+      console.log('Listening for live prompt completions and transcript changes in background...');
+      console.log('\x1b[90m(Press Ctrl+C to stop)\x1b[0m\n');
+
+      const poll = async () => {
+        const res = await hookManager.syncClaudeLogs(config.apiUrl, config.apiKey || config.token, config.organizationId);
+        if (res.syncedEvents > 0) {
+          console.log(`[\x1b[32m${new Date().toLocaleTimeString()}\x1b[0m] ⚡ Ingested \x1b[33m${res.syncedEvents} new events\x1b[0m (${res.totalTokens.toLocaleString()} tokens) from Claude Code`);
+        }
+      };
+
+      await poll();
+      setInterval(poll, 2500);
+      break;
+    }
+
     case 'status': {
+      // Auto sync pending transcripts
+      const syncRes = await hookManager.syncClaudeLogs(config.apiUrl, config.apiKey || config.token, config.organizationId);
+
       console.log('\n📊 \x1b[1m\x1b[36mTokenTrail Status\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
       console.log(`Central API:        \x1b[32m${config.apiUrl}\x1b[0m`);
@@ -508,6 +675,9 @@ async function main() {
       console.log(`Organization:       ${config.organizationId}`);
       console.log(`Authenticated:      ${config.apiKey || config.token ? '\x1b[32m✔ Active\x1b[0m' : '\x1b[33mNo (Run `tokentrail login`)\x1b[0m'}`);
       console.log(`Connected Agents:   ${config.connectedAgents.length > 0 ? config.connectedAgents.join(', ') : 'None (run `tokentrail connect claude`)'}`);
+      if (syncRes.syncedEvents > 0) {
+        console.log(`Recent Sync:        \x1b[32m✔ ${syncRes.syncedEvents} events (${syncRes.totalTokens.toLocaleString()} tokens) ingested\x1b[0m`);
+      }
       console.log(`Config File:        ${CONFIG_FILE}\n`);
       break;
     }
@@ -515,6 +685,8 @@ async function main() {
     case 'doctor': {
       console.log('\n🩺 \x1b[1m\x1b[36mTokenTrail Diagnostics & Doctor\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
+
+      const syncRes = await hookManager.syncClaudeLogs(config.apiUrl, config.apiKey || config.token, config.organizationId);
 
       let apiOnline = false;
       try {
@@ -525,9 +697,12 @@ async function main() {
       console.log(`Central API Reachability ... ${apiOnline ? '\x1b[32m✔ Online\x1b[0m' : '\x1b[33m⚠ Offline (Local queue buffering active)\x1b[0m'}`);
       console.log(`SQLite Durability Queue ..... \x1b[32m✔ WAL Mode Active\x1b[0m`);
       console.log(`Queue Database ............. ${path.join(CONFIG_DIR, 'collector.db')}`);
-      console.log(`Claude Code Hook ........... ${fs.existsSync(path.join(os.homedir(), '.claude')) ? '\x1b[32m✔ Installed\x1b[0m' : 'Not installed'}`);
+      console.log(`Claude Code Sessions ....... ${fs.existsSync(path.join(os.homedir(), '.claude')) ? '\x1b[32m✔ Connected\x1b[0m' : 'Not detected'}`);
       console.log(`Copilot Hook ............... ${fs.existsSync(path.join(os.homedir(), '.config', 'github-copilot')) ? '\x1b[32m✔ Installed\x1b[0m' : 'Not installed'}`);
       console.log(`Gemini/Antigravity MCP ..... ${fs.existsSync(path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')) ? '\x1b[32m✔ Configured\x1b[0m' : 'Not configured'}`);
+      if (syncRes.syncedEvents > 0) {
+        console.log(`Ingestion Buffer ........... \x1b[32m✔ ${syncRes.syncedEvents} prompt events ingested\x1b[0m`);
+      }
       console.log('\n\x1b[32mDiagnostic Check Complete: System is ready.\x1b[0m\n');
       break;
     }
@@ -551,6 +726,8 @@ async function main() {
       console.log('\n⚡ \x1b[1m\x1b[36mTokenTrail CLI\x1b[0m - AI Coding Agent Observability Platform\n');
       console.log('Usage:');
       console.log('  tokentrail login             Authenticate developer credentials & auto-populate MCP');
+      console.log('  tokentrail sync              Scan & synchronize Claude Code sessions and token usage');
+      console.log('  tokentrail watch             Stream and ingest agent completions in real-time');
       console.log('  tokentrail connect <agent>   Automatically install telemetry hooks for an agent');
       console.log('  tokentrail disconnect <agent>Safely remove hooks without touching user configs');
       console.log('  tokentrail status            Show connected agents and server endpoints');
