@@ -5,12 +5,22 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
     "outDir": "./dist",
-    "rootDir": "./src",
-    "strict": true,
+    "rootDir": ".",
+    "strict": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*"]
+  "include": [
+    "src/**/*",
+    "apps/**/*",
+    "packages/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "apps/dashboard",
+    "dist",
+    ".next"
+  ]
 }

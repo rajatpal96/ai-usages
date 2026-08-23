@@ -198,13 +198,13 @@ async function runAllTests() {
 
   // 8. Testing Apache Kafka Streaming Layer
   console.log('🔹 8. Testing Apache Kafka Event Streaming Layer...');
-  let receivedKafkaEvent = false;
+  const receivedState = { received: false };
   const testEventId = `evt_test_${uuidv4().slice(0, 8)}`;
   const testGroupId = `test-group-${uuidv4().slice(0, 8)}`;
 
   await kafkaClient.subscribeConsumer(KAFKA_TOPICS.USAGE_EVENTS, testGroupId, (event) => {
     if (event.eventId === testEventId) {
-      receivedKafkaEvent = true;
+      receivedState.received = true;
     }
   });
 
@@ -217,10 +217,10 @@ async function runAllTests() {
 
   // Wait for consumer dispatch
   for (let i = 0; i < 30; i++) {
-    if (receivedKafkaEvent) break;
+    if (receivedState.received) break;
     await new Promise((r) => setTimeout(r, 150));
   }
-  assert(receivedKafkaEvent === true, 'Kafka stream consumer should receive produced event');
+  assert(receivedState.received, 'Kafka stream consumer should receive produced event');
   console.log('   ✅ Kafka Producer & Consumer group streaming verified.\n');
 
   console.log('================================================================');

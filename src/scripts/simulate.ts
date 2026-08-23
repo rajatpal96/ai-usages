@@ -1,4 +1,4 @@
-import { collector } from '../apps/collector/src/index.js';
+import { collector } from '../../apps/collector/src/index.js';
 
 const AGENTS = [
   { name: 'claude-code', model: 'claude-3-7-sonnet', type: 'coding_cli' },

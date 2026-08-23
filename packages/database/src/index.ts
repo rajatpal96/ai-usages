@@ -168,7 +168,7 @@ SessionSchema.index({ organizationId: 1, totalCostUsd: -1 });
 // -------------------------------------------------------------
 // 6. Raw Usage Events Schema (Universal UsageEvent)
 // -------------------------------------------------------------
-export interface IUsageEvent extends Document {
+export interface IUsageEvent {
   eventId: string;
   timestamp: Date;
   organizationId: string;
@@ -387,7 +387,7 @@ McpToolCallSchema.index({ organizationId: 1, serverName: 1, toolName: 1, timesta
 // -------------------------------------------------------------
 // 10. Pricing Schema
 // -------------------------------------------------------------
-export interface IPricing extends Document {
+export interface IPricing {
   provider: string;
   model: string;
   inputPricePerMillion: number;
