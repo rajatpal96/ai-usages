@@ -270,23 +270,37 @@ function ensureConfigDir() {
 
 function loadConfig() {
   ensureConfigDir();
+  let cfg = {};
   if (fs.existsSync(CONFIG_FILE)) {
     try {
-      return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+      cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     } catch (e) {}
+  } else {
+    const legacyConfigFile = path.join(LEGACY_CONFIG_DIR, 'config.json');
+    if (fs.existsSync(legacyConfigFile)) {
+      try {
+        cfg = JSON.parse(fs.readFileSync(legacyConfigFile, 'utf-8'));
+      } catch (e) {}
+    }
   }
-  const legacyConfigFile = path.join(LEGACY_CONFIG_DIR, 'config.json');
-  if (fs.existsSync(legacyConfigFile)) {
-    try {
-      return JSON.parse(fs.readFileSync(legacyConfigFile, 'utf-8'));
-    } catch (e) {}
+
+  const defaultApi = process.env.TOKENTRAIL_API_URL || process.env.AGENTMETER_API_URL || 'https://api.tokentrail.xyz';
+  const defaultIngest = process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1/events';
+
+  if (!cfg.apiUrl || cfg.apiUrl.includes('localhost') || cfg.apiUrl.includes('127.0.0.1')) {
+    cfg.apiUrl = defaultApi;
   }
-  return {
-    apiUrl: process.env.TOKENTRAIL_API_URL || process.env.AGENTMETER_API_URL || 'https://api.tokentrail.xyz',
-    ingestUrl: process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1/events',
-    organizationId: 'org_default',
-    connectedAgents: [],
-  };
+  if (!cfg.ingestUrl || cfg.ingestUrl.includes('localhost') || cfg.ingestUrl.includes('127.0.0.1')) {
+    cfg.ingestUrl = defaultIngest;
+  }
+  if (!cfg.organizationId) {
+    cfg.organizationId = 'org_default';
+  }
+  if (!cfg.connectedAgents) {
+    cfg.connectedAgents = [];
+  }
+
+  return cfg;
 }
 
 function saveConfig(cfg) {
