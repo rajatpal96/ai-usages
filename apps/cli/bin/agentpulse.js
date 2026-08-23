@@ -384,7 +384,7 @@ async function main() {
       server.listen(0, '127.0.0.1', () => {
         const port = server.address().port;
         const callbackUrl = `http://127.0.0.1:${port}/callback`;
-        const dashboardUrl = process.env.TOKENTRAIL_DASHBOARD_URL || 'https://tokentrail.xyz';
+        const dashboardUrl = process.env.TOKENTRAIL_DASHBOARD_URL || 'https://www.tokentrail.xyz';
         const authUrl = `${dashboardUrl}?cli_callback=${encodeURIComponent(callbackUrl)}&cli_state=${authState}`;
 
         console.log(`Opening browser for authentication:`);
@@ -468,7 +468,7 @@ async function main() {
       }
 
       console.log(`\x1b[32m✔ ${result.agent} connected successfully!\x1b[0m`);
-      console.log(`Dashboard: \x1b[34mhttps://tokentrail.xyz\x1b[0m\n`);
+      console.log(`Dashboard: \x1b[34mhttps://www.tokentrail.xyz\x1b[0m\n`);
       break;
     }
 
