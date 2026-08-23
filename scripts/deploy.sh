@@ -92,6 +92,8 @@ else
 fi
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+echo -e "${BLUE}Syncing branch '${CURRENT_BRANCH}' with origin...${NC}"
+git pull --rebase origin "$CURRENT_BRANCH" || true
 echo -e "${BLUE}Pushing branch '${CURRENT_BRANCH}' to origin...${NC}"
 git push origin "$CURRENT_BRANCH"
 echo -e "${GREEN}✅ Successfully pushed to GitHub (origin/${CURRENT_BRANCH})!${NC}\n"
