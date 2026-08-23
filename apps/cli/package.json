@@ -1,0 +1,21 @@
+{
+  "name": "@rajatpal96/agentpulse",
+  "version": "1.0.0",
+  "description": "Developer CLI for AgentPulse AI Coding Agent Observability Platform",
+  "type": "module",
+  "bin": {
+    "agentpulse": "./bin/agentpulse.js",
+    "agentmeter": "./bin/agentpulse.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node bin/agentpulse.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "typescript": "^5.7.3"
+  }
+}

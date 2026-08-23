@@ -1,0 +1,124 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: agentmeter-zookeeper
+    restart: always
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: agentmeter-kafka
+    restart: always
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  mongodb:
+    image: mongo:7.0
+    container_name: agentmeter-mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: agentmeter
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: agentmeter-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  ingestion:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    container_name: agentmeter-ingestion
+    restart: always
+    ports:
+      - "4001:4001"
+    environment:
+      - NODE_ENV=production
+      - INGESTION_PORT=4001
+      - MONGODB_URI=mongodb://mongodb:27017/agentmeter
+      - REDIS_URL=redis://redis:6379
+      - KAFKA_BROKERS=kafka:29092
+    depends_on:
+      - mongodb
+      - redis
+      - kafka
+    command: ["node", "--loader", "tsx", "apps/ingestion/src/index.ts"]
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    container_name: agentmeter-api
+    restart: always
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - API_PORT=4000
+      - MONGODB_URI=mongodb://mongodb:27017/agentmeter
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - mongodb
+      - redis
+    command: ["node", "--loader", "tsx", "apps/api/src/index.ts"]
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    container_name: agentmeter-worker
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/agentmeter
+      - REDIS_URL=redis://redis:6379
+      - KAFKA_BROKERS=kafka:29092
+    depends_on:
+      - mongodb
+      - redis
+      - kafka
+    command: ["node", "--loader", "tsx", "apps/worker/src/index.ts"]
+
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    container_name: agentmeter-dashboard
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    depends_on:
+      - api
+      - ingestion
+    command: ["npm", "run", "dev", "--prefix", "apps/dashboard"]
+
+volumes:
+  mongo_data:
+  redis_data:
