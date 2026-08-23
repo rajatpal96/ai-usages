@@ -121,6 +121,78 @@ To stop:
 docker compose -f infrastructure/docker/docker-compose.yml down
 ```
 
+### C. Deploy Backend to AWS EC2 (Step-by-Step)
+
+#### 1. Launch EC2 Instance
+- **AMI**: Ubuntu 22.04 LTS (x86_64)
+- **Instance Type**: `t3.small` (2 GB RAM) or `t3.medium`
+- **Security Group**: Allow SSH (22), HTTP (80), HTTPS (443).
+
+#### 2. SSH into EC2 & Install Node.js + PM2
+```bash
+ssh -i your-key.pem ubuntu@YOUR_EC2_PUBLIC_IP
+
+# Install Node.js 20 LTS & PM2
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt update && sudo apt install -y nodejs git build-essential nginx certbot python3-certbot-nginx
+sudo npm install -g pm2
+```
+
+#### 3. Clone Repository & Build
+```bash
+git clone https://github.com/your-org/ai-usages.git
+cd ai-usages
+npm install
+npm run build
+```
+
+#### 4. Configure Production Environment
+Create `.env`:
+```bash
+cat > .env << 'EOF'
+NODE_ENV=production
+API_PORT=4000
+INGESTION_PORT=4001
+DEFAULT_ORG_ID=org_default
+JWT_SECRET=your-secure-32-char-secret-key-here
+MONGODB_URI=mongodb+srv://username:password@cluster0.yourcompany.mongodb.net/agentmeter?retryWrites=true&w=majority
+EOF
+```
+
+#### 5. Start Backend Services with PM2 (Auto-Restart on Reboot)
+```bash
+# Start API, Ingestion, and Worker
+pm2 start npx --name "agentpulse-api" -- tsx apps/api/src/index.ts
+pm2 start npx --name "agentpulse-ingestion" -- tsx apps/ingestion/src/index.ts
+pm2 start npx --name "agentpulse-worker" -- tsx apps/worker/src/index.ts
+
+# Configure startup on system boot
+pm2 save
+pm2 startup
+```
+
+#### 6. Configure NGINX Reverse Proxy & Free SSL
+```bash
+sudo tee /etc/nginx/sites-available/agentpulse << 'EOF'
+server {
+    listen 80;
+    server_name api.yourdomain.com;
+
+    location /v1/analytics/ { proxy_pass http://localhost:4000/v1/analytics/; }
+    location /v1/auth/      { proxy_pass http://localhost:4000/v1/auth/; }
+    location /v1/oauth/     { proxy_pass http://localhost:4000/v1/oauth/; }
+    location /v1/events     { proxy_pass http://localhost:4001/v1/events; }
+    location /health        { proxy_pass http://localhost:4000/health; }
+}
+EOF
+
+sudo ln -s /etc/nginx/sites-available/agentpulse /etc/nginx/sites-enabled/
+sudo systemctl restart nginx
+
+# Enable Free HTTPS Certificate
+sudo certbot --nginx -d api.yourdomain.com
+```
+
 #### Option 2: Render / Railway / Fly.io (Managed Cloud PaaS)
 1. **Database**: Create a free **MongoDB Atlas** database cluster and copy the connection URI (`mongodb+srv://...`).
 2. **Service 1 - Usage API**:
