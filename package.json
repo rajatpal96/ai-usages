@@ -9,11 +9,13 @@
     "packages/*"
   ],
   "bin": {
-    "agentpulse": "./apps/cli/bin/agentpulse.js",
-    "agentmeter": "./apps/cli/bin/agentpulse.js"
+    "tokentrail": "./apps/cli/bin/tokentrail.js",
+    "agentpulse": "./apps/cli/bin/tokentrail.js",
+    "agentmeter": "./apps/cli/bin/tokentrail.js"
   },
   "scripts": {
-    "cli": "node apps/cli/bin/agentpulse.js",
+    "cli": "node apps/cli/bin/tokentrail.js",
+    "tokentrail": "node apps/cli/bin/tokentrail.js",
     "start": "tsx src/index.ts",
     "dev": "tsx src/index.ts",
     "dashboard": "npm run dev --prefix apps/dashboard",
@@ -23,6 +25,8 @@
     "test:metrics": "tsx src/scripts/testSuite.ts",
     "simulate": "tsx src/scripts/simulate.ts",
     "build": "tsc",
+    "publish:cli": "(cd apps/cli && npm publish --access public)",
+    "publish:mcp": "(cd apps/mcp-server && npm publish --access public)",
     "deploy": "./scripts/deploy.sh",
     "deploy:quick": "./scripts/deploy.sh --skip-tests"
   },

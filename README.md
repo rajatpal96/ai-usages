@@ -1,40 +1,43 @@
-# AgentMeter
+# TokenTrail (formerly AgentMeter)
 
-AgentMeter is an AI agent usage and observability platform for Claude Code, GitHub Copilot, Cursor, Windsurf, Gemini/Antigravity, Codex, Grok, and custom MCP agents. It collects usage telemetry, calculates model costs, exposes analytics APIs, provides MCP tools, and includes an enterprise identity and OAuth layer.
+TokenTrail is an AI agent usage and observability platform for Claude Code, GitHub Copilot, Cursor, Windsurf, Gemini/Antigravity, Codex, Grok, and custom MCP agents. It collects usage telemetry, calculates model costs, exposes analytics APIs, provides MCP tools, and includes an enterprise identity and OAuth layer.
 
-## Implementation Plan Status
+## Services & Production Endpoints
 
-This repo follows the attached implementation plan for:
-
-- Identity Layer: email login, SSO-style provider endpoints for Google, GitHub, Microsoft, and SAML/OIDC, signed user JWTs, organization tenancy, and RBAC roles.
-- MCP OAuth 2.0: `/v1/oauth/token`, `/v1/oauth/jwks`, and Bearer token verification for MCP access scopes such as `mcp:read`, `mcp:usage`, `mcp:cost`, and `mcp:admin`.
-- Kafka Streaming: `packages/kafka` publishes usage and MCP telemetry to `agentmeter.usage-events` and `agentmeter.mcp-events`, with an in-memory fallback when Kafka is unavailable.
-- Worker Rollups: the background worker consumes usage events and updates hourly, daily, session, budget, and alert data in MongoDB.
-- Dashboard UI: the Next.js dashboard has been separated into `/Users/batu/Downloads/agent-pulse-ui` for standalone UI development.
-
-## Services
-
-- Dashboard: `http://localhost:3000`
-- Usage and Analytics API: `http://localhost:4000`
-- Ingestion API and LLM proxy: `http://localhost:4001`
-- MCP stdio server: `npm run mcp`
-- MongoDB: `mongodb://localhost:27017/agentmeter`
-- Kafka broker: `localhost:9092`
+- **Web Dashboard**: `https://tokentrail.xyz` (Local: `http://localhost:3000`)
+- **Usage & Analytics API**: `https://api.tokentrail.xyz` (Local: `http://localhost:4000`)
+- **Ingestion API & LLM Proxy**: `https://api.tokentrail.xyz/v1/events` (Local: `http://localhost:4001`)
+- **MCP Server**: `tokentrail-mcp` (`npm run mcp`)
+- **Kafka Broker**: `localhost:9092`
 
 ## Developer CLI: Automatic Agent Onboarding
 
 Install the published CLI globally:
 
 ```bash
-npm install -g @rajatpal96/agentpulse
+npm install -g tokentrail
 ```
 
-Or run instantly without installing:
+Or run instantly with `npx`:
 
 ```bash
-npx @rajatpal96/agentpulse login
-npx @rajatpal96/agentpulse connect claude
-npx @rajatpal96/agentpulse doctor
+npx tokentrail login
+npx tokentrail connect claude
+npx tokentrail connect copilot
+npx tokentrail connect antigravity
+npx tokentrail doctor
+```
+
+### Publishing CLI to Node.js Package Registry (npm)
+
+To publish the CLI and MCP packages to npm:
+
+```bash
+# 1. Publish TokenTrail CLI
+npm run publish:cli
+
+# 2. Publish TokenTrail MCP Server
+npm run publish:mcp
 ```
 
 In a second terminal, run the standalone dashboard:

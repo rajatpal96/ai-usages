@@ -38,21 +38,23 @@ export class LocalCollector {
   private lastUploadTime: string | null = null;
 
   constructor(customConfig?: Partial<CollectorConfig>) {
-    const defaultDbDir = path.join(process.cwd(), '.agentpulse');
-    if (!fs.existsSync(defaultDbDir)) {
+    const defaultDbDir = path.join(process.cwd(), '.tokentrail');
+    const legacyDbDir = path.join(process.cwd(), '.agentpulse');
+    const activeDir = fs.existsSync(legacyDbDir) ? legacyDbDir : defaultDbDir;
+    if (!fs.existsSync(activeDir)) {
       try {
-        fs.mkdirSync(defaultDbDir, { recursive: true });
+        fs.mkdirSync(activeDir, { recursive: true });
       } catch (e) {}
     }
 
     this.config = {
-      apiUrl: customConfig?.apiUrl || process.env.AGENTMETER_INGEST_URL || process.env.AGENTMETER_API_URL || 'http://localhost:4001',
-      apiKey: customConfig?.apiKey || process.env.AGENTMETER_API_KEY,
-      organizationId: customConfig?.organizationId || process.env.AGENTMETER_ORG_ID || 'org_default',
+      apiUrl: customConfig?.apiUrl || process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || process.env.AGENTMETER_API_URL || 'https://api.tokentrail.xyz',
+      apiKey: customConfig?.apiKey || process.env.TOKENTRAIL_API_KEY || process.env.AGENTMETER_API_KEY,
+      organizationId: customConfig?.organizationId || process.env.TOKENTRAIL_ORG_ID || process.env.AGENTMETER_ORG_ID || 'org_default',
       batchSize: customConfig?.batchSize || 25,
       flushIntervalMs: customConfig?.flushIntervalMs || 3000,
       maxRetries: customConfig?.maxRetries || 5,
-      dbPath: customConfig?.dbPath || path.join(defaultDbDir, 'collector.db'),
+      dbPath: customConfig?.dbPath || path.join(activeDir, 'collector.db'),
     };
 
     this.initDatabase();

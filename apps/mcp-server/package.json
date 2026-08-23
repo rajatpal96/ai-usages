@@ -1,0 +1,29 @@
+{
+  "name": "tokentrail-mcp",
+  "version": "1.0.0",
+  "description": "Model Context Protocol (MCP) Server for TokenTrail AI Usage & Observability",
+  "type": "module",
+  "main": "./src/index.js",
+  "bin": {
+    "tokentrail-mcp": "./bin/tokentrail-mcp.js",
+    "agentmeter-mcp": "./bin/tokentrail-mcp.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "keywords": [
+    "tokentrail",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "claude-code",
+    "antigravity",
+    "gemini"
+  ],
+  "author": "TokenTrail Team",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.1.0"
+  }
+}

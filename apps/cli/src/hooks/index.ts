@@ -40,12 +40,17 @@ export class SafeHookManager {
       } catch (e) {}
     }
 
-    // Merge AgentPulse Telemetry Hook without overwriting other properties
+    // Merge TokenTrail / AgentPulse Telemetry Hook without overwriting other properties
     const updatedConfig = {
       ...existingConfig,
+      tokentrail: {
+        enabled: true,
+        endpoint: process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1/events',
+        installedAt: new Date().toISOString(),
+      },
       agentpulse: {
         enabled: true,
-        endpoint: process.env.AGENTMETER_INGEST_URL || 'http://localhost:4001/v1/events',
+        endpoint: process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1/events',
         installedAt: new Date().toISOString(),
       },
     };
@@ -58,7 +63,7 @@ export class SafeHookManager {
       version: '1.0.x',
       installed: true,
       backupPath,
-      message: 'AgentPulse hook merged safely into ~/.claude/config.json',
+      message: 'TokenTrail hook merged safely into ~/.claude/config.json',
     };
   }
 
@@ -79,7 +84,8 @@ export class SafeHookManager {
 
     const config = {
       telemetryForwarding: true,
-      agentpulseEndpoint: process.env.AGENTMETER_INGEST_URL || 'http://localhost:4001/v1/events',
+      tokentrailEndpoint: process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1/events',
+      agentpulseEndpoint: process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1/events',
       updatedAt: new Date().toISOString(),
     };
 
@@ -105,7 +111,8 @@ export class SafeHookManager {
     fs.mkdirSync(codexDir, { recursive: true });
 
     const config = {
-      proxyUrl: process.env.AGENTMETER_INGEST_URL || 'http://localhost:4001/v1',
+      proxyUrl: process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1',
+      tokentrail: true,
       agentpulse: true,
       installedAt: new Date().toISOString(),
     };
@@ -117,7 +124,7 @@ export class SafeHookManager {
       detected: true,
       version: '2.0.x',
       installed: true,
-      message: 'Codex gateway configured to route through AgentPulse proxy',
+      message: 'Codex gateway configured to route through TokenTrail proxy',
     };
   }
 
@@ -131,6 +138,7 @@ export class SafeHookManager {
       if (fs.existsSync(configFile)) {
         try {
           const cfg = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+          delete cfg.tokentrail;
           delete cfg.agentpulse;
           fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2));
           return true;

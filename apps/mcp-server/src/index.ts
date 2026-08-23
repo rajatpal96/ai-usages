@@ -10,12 +10,12 @@ import { formatCurrency, formatNumber } from '../../../packages/common/src/index
 
 const log = createScopedLogger('mcp-server');
 
-// Centralized AgentMeter API Endpoint (Defaults to central backend)
-const API_BASE_URL = process.env.AGENTMETER_API_URL || process.env.API_BASE_URL || 'http://localhost:4000';
-const INGEST_BASE_URL = process.env.AGENTMETER_INGEST_URL || process.env.INGEST_BASE_URL || 'http://localhost:4001';
-const API_KEY = process.env.AGENTMETER_API_KEY || process.env.API_KEY || '';
+// Centralized TokenTrail API Endpoint (Defaults to central backend)
+const API_BASE_URL = process.env.TOKENTRAIL_API_URL || process.env.AGENTMETER_API_URL || process.env.API_BASE_URL || 'https://api.tokentrail.xyz';
+const INGEST_BASE_URL = process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || process.env.INGEST_BASE_URL || 'https://api.tokentrail.xyz';
+const API_KEY = process.env.TOKENTRAIL_API_KEY || process.env.AGENTMETER_API_KEY || process.env.API_KEY || '';
 const MCP_ACCESS_TOKEN = process.env.MCP_ACCESS_TOKEN || '';
-const DEFAULT_ORG_ID = process.env.DEFAULT_ORG_ID || 'org_default';
+const DEFAULT_ORG_ID = process.env.TOKENTRAIL_ORG_ID || process.env.DEFAULT_ORG_ID || 'org_default';
 
 /**
  * Helper to call the Central AgentMeter REST API

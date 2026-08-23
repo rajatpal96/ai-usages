@@ -1,20 +1,41 @@
 {
-  "name": "@rajatpal96/agentpulse",
+  "name": "tokentrail",
   "version": "1.0.0",
-  "description": "Developer CLI for AgentPulse AI Coding Agent Observability Platform",
+  "description": "TokenTrail CLI - AI Coding Agent Usage & Observability Platform",
   "type": "module",
   "bin": {
-    "agentpulse": "./bin/agentpulse.js",
-    "agentmeter": "./bin/agentpulse.js"
+    "tokentrail": "./bin/tokentrail.js",
+    "agentpulse": "./bin/tokentrail.js",
+    "agentmeter": "./bin/tokentrail.js"
   },
+  "files": [
+    "bin",
+    "dist",
+    "src",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
-    "start": "node bin/agentpulse.js"
+    "start": "node bin/tokentrail.js",
+    "prepublishOnly": "npm run build"
   },
+  "keywords": [
+    "tokentrail",
+    "ai-observability",
+    "token-tracker",
+    "claude-code",
+    "copilot",
+    "gemini",
+    "antigravity",
+    "mcp"
+  ],
+  "author": "TokenTrail Team",
+  "license": "MIT",
   "dependencies": {
     "better-sqlite3": "^9.6.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.13.4",
     "typescript": "^5.7.3"
   }
