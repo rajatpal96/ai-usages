@@ -15,28 +15,31 @@ TokenTrail is an AI agent usage and observability platform for Claude Code, GitH
 Install the published CLI globally:
 
 ```bash
-npm install -g tokentrail
+npm install -g @rajatpal96/tokentrail
 ```
 
 Or run instantly with `npx`:
 
 ```bash
-npx tokentrail login
-npx tokentrail connect claude
-npx tokentrail connect copilot
-npx tokentrail connect antigravity
-npx tokentrail doctor
+npx @rajatpal96/tokentrail login
+npx @rajatpal96/tokentrail connect claude
+npx @rajatpal96/tokentrail connect copilot
+npx @rajatpal96/tokentrail connect antigravity
+npx @rajatpal96/tokentrail doctor
 ```
 
-### Publishing CLI to Node.js Package Registry (npm)
+### Publishing to Node.js Package Registry (npm)
 
-To publish the CLI and MCP packages to npm:
+To publish both CLI and MCP packages to npm:
 
 ```bash
-# 1. Publish TokenTrail CLI
+# 1. Login to npm
+npm login
+
+# 2. Publish TokenTrail CLI (@rajatpal96/tokentrail)
 npm run publish:cli
 
-# 2. Publish TokenTrail MCP Server
+# 3. Publish TokenTrail MCP Server (@rajatpal96/tokentrail-mcp)
 npm run publish:mcp
 ```
 

@@ -1,5 +1,5 @@
 {
-  "name": "tokentrail",
+  "name": "@rajatpal96/tokentrail",
   "version": "1.0.0",
   "description": "TokenTrail CLI - AI Coding Agent Usage & Observability Platform",
   "type": "module",

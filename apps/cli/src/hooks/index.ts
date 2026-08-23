@@ -150,7 +150,7 @@ export class SafeHookManager {
 
     existingMcp.mcpServers.tokentrail = {
       command: 'npx',
-      args: ['-y', 'tokentrail-mcp'],
+      args: ['-y', '@rajatpal96/tokentrail-mcp'],
       env: {
         TOKENTRAIL_API_URL: apiUrl,
         TOKENTRAIL_INGEST_URL: ingestUrl,
