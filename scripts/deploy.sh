@@ -121,12 +121,13 @@ if [ "$DEPLOY_VERCEL" = true ]; then
   fi
 fi
 
-# Step 6: Optional PM2 Reload
-if [ "$RESTART_PM2" = true ]; then
-  echo -e "${YELLOW}🔹 Step 6: Reloading PM2 services...${NC}"
-  if command -v pm2 &> /dev/null; then
+# Step 6: PM2 Service Reload (if running on production server)
+if command -v pm2 &> /dev/null; then
+  PM2_COUNT=$(pm2 jlist 2>/dev/null | grep -o '"name"' | wc -l || echo "0")
+  if [ "$RESTART_PM2" = true ] || [ "$PM2_COUNT" -gt 0 ]; then
+    echo -e "${YELLOW}🔹 Step 6: Active PM2 processes detected ($PM2_COUNT). Reloading PM2 services...${NC}"
     pm2 reload all || pm2 restart all
-    echo -e "${GREEN}✅ PM2 services reloaded.${NC}\n"
+    echo -e "${GREEN}✅ PM2 services reloaded with latest code.${NC}\n"
   fi
 fi
 

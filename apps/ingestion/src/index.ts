@@ -335,17 +335,33 @@ app.get('/health', (_req: Request, res: Response) => {
 export async function startIngestionServer(port: number = config.INGESTION_PORT): Promise<any> {
   await connectDatabase();
   await kafkaClient.connectProducer();
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const server = app.listen(port, () => {
-      log.info({ port }, `⚡ AgentMeter Ingestion Service running on http://localhost:${port}`);
+      const addr = server.address();
+      const actualPort = typeof addr === 'object' && addr ? addr.port : port;
+      log.info({ port: actualPort }, `⚡ AgentMeter Ingestion Service running on http://localhost:${actualPort}`);
+      (server as any).actualPort = actualPort;
       resolve(server);
     });
     server.on('error', (err: any) => {
       if (err.code === 'EADDRINUSE') {
-        log.warn({ port }, `Ingestion server port ${port} is already in use, reusing active instance.`);
-        resolve(server);
+        const fallbackPort = port + 5;
+        log.warn({ port, fallbackPort }, `Ingestion server port ${port} is already in use by another process. Binding test instance to fallback port ${fallbackPort}...`);
+        const fallbackServer = app.listen(fallbackPort, () => {
+          (fallbackServer as any).actualPort = fallbackPort;
+          resolve(fallbackServer);
+        });
+        fallbackServer.on('error', () => {
+          const ephemeralServer = app.listen(0, () => {
+            const addr = ephemeralServer.address();
+            const actualPort = typeof addr === 'object' && addr ? addr.port : 0;
+            (ephemeralServer as any).actualPort = actualPort;
+            resolve(ephemeralServer);
+          });
+        });
       } else {
         log.error({ err: err.message }, 'Ingestion server error');
+        reject(err);
       }
     });
   });

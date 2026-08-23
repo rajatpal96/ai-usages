@@ -130,10 +130,14 @@ async function runAllTests() {
   assert.strictEqual(verifiedProfile?.provider, 'google');
 
   // Start API server for HTTP endpoint tests
-  try { await startApiServer(4000); } catch (e) {}
+  let apiServer: any = null;
+  try {
+    apiServer = await startApiServer(4000);
+  } catch (e) {}
+  const apiPort = (apiServer && apiServer.actualPort) || 4000;
 
   // Test CORS preflight (OPTIONS /api/v1/auth/signup)
-  const optionsRes = await fetch('http://localhost:4000/api/v1/auth/signup', {
+  const optionsRes = await fetch(`http://localhost:${apiPort}/api/v1/auth/signup`, {
     method: 'OPTIONS',
     headers: {
       'Origin': 'http://localhost:3000',
@@ -154,7 +158,7 @@ async function runAllTests() {
     organization: 'EXT',
     role: 'AI Platform Engineer',
   };
-  const signupRes = await fetch('http://localhost:4000/api/v1/auth/signup', {
+  const signupRes = await fetch(`http://localhost:${apiPort}/api/v1/auth/signup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(signupPayload),
@@ -168,7 +172,7 @@ async function runAllTests() {
   assert.strictEqual(signupData.user.role, 'AI Platform Engineer');
 
   // Test duplicate signup returns 409 Conflict
-  const duplicateRes = await fetch('http://localhost:4000/api/v1/auth/signup', {
+  const duplicateRes = await fetch(`http://localhost:${apiPort}/api/v1/auth/signup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(signupPayload),
@@ -202,8 +206,15 @@ async function runAllTests() {
 
   // 7. Testing Model Context Protocol (MCP) Server & Tool Execution
   console.log('🔹 7. Testing Zero-DB Lightweight MCP Client connecting over HTTP...');
-  try { await startApiServer(4000); } catch (e) {}
-  try { await startIngestionServer(4001); } catch (e) {}
+  if (!apiServer) {
+    try { apiServer = await startApiServer(4000); } catch (e) {}
+  }
+  let ingestionServer: any = null;
+  try { ingestionServer = await startIngestionServer(4001); } catch (e) {}
+  const activeIngestionPort = (ingestionServer && ingestionServer.actualPort) || 4001;
+
+  process.env.AGENTMETER_API_URL = `http://localhost:${apiPort}`;
+  process.env.AGENTMETER_INGEST_URL = `http://localhost:${activeIngestionPort}`;
 
   const mcpServer = createMcpServer();
   
