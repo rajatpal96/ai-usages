@@ -271,7 +271,7 @@ class SafeHookManager {
       } catch (e) {}
     }
 
-    const eventsToUpload = [];
+    const eventsMap = new Map();
     let totalTokens = 0;
     const sessionSet = new Set();
 
@@ -287,18 +287,9 @@ class SafeHookManager {
             for (const line of lines) {
               const data = JSON.parse(line);
               if (data.type === 'assistant' && data.message && data.message.usage) {
-                const messageId = data.uuid || data.message.id || `${data.sessionId}_${data.timestamp}`;
-                if (syncedIds[messageId]) continue;
-
-                const inputTokens = data.message.usage.input_tokens || 0;
-                const outputTokens = data.message.usage.output_tokens || 0;
-                const cacheRead = data.message.usage.cache_read_input_tokens || 0;
-                const cacheWrite = data.message.usage.cache_creation_input_tokens || 0;
-                const total = inputTokens + outputTokens + cacheRead + cacheWrite;
-
-                totalTokens += total;
-                syncedIds[messageId] = true;
-                if (data.sessionId) sessionSet.add(data.sessionId);
+                // Key by prompt completion turn ID (message.id) to eliminate chunk duplicates
+                const turnId = data.message.id || data.uuid || `${data.sessionId}_${data.timestamp}`;
+                if (syncedIds[turnId]) continue;
 
                 // Extract tool calls and reasoning snippet
                 const toolsUsed = [];
@@ -314,10 +305,33 @@ class SafeHookManager {
                   }
                 }
 
+                if (eventsMap.has(turnId)) {
+                  // Merge any additional tool calls or thinking text into existing turn
+                  const existing = eventsMap.get(turnId);
+                  for (const t of toolsUsed) {
+                    if (!existing.metadata.tools.includes(t)) {
+                      existing.metadata.tools.push(t);
+                    }
+                  }
+                  if (thinkingText && !existing.metadata.thinkingSnippet) {
+                    existing.metadata.thinkingSnippet = thinkingText;
+                  }
+                  continue;
+                }
+
+                const inputTokens = data.message.usage.input_tokens || 0;
+                const outputTokens = data.message.usage.output_tokens || 0;
+                const cacheRead = data.message.usage.cache_read_input_tokens || 0;
+                const cacheWrite = data.message.usage.cache_creation_input_tokens || 0;
+                const total = inputTokens + outputTokens + cacheRead + cacheWrite;
+
+                totalTokens += total;
+                if (data.sessionId) sessionSet.add(data.sessionId);
+
                 const projectName = data.cwd ? path.basename(data.cwd) : 'default';
 
-                eventsToUpload.push({
-                  eventId: `evt_${messageId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
+                eventsMap.set(turnId, {
+                  eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
                   timestamp: data.timestamp || new Date().toISOString(),
                   organizationId: orgId || 'EXT',
                   userId: 'developer',
@@ -349,6 +363,7 @@ class SafeHookManager {
                     toolCount: toolsUsed.length,
                     stopReason: data.message.stop_reason,
                     thinkingSnippet: thinkingText || undefined,
+                    turnId,
                   },
                   status: 'success',
                 });
@@ -361,8 +376,13 @@ class SafeHookManager {
 
     scanDir(projectsDir);
 
+    const eventsToUpload = Array.from(eventsMap.values());
+
     if (eventsToUpload.length > 0) {
       ensureConfigDir();
+      for (const [turnId] of eventsMap.entries()) {
+        syncedIds[turnId] = true;
+      }
       fs.writeFileSync(stateFile, JSON.stringify(syncedIds));
 
       // Buffer into local SQLite durability queue if present

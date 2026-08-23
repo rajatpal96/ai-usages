@@ -1,6 +1,6 @@
 {
   "name": "@rajatpal96/tokentrail",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "TokenTrail CLI - AI Coding Agent Usage & Observability Platform",
   "type": "module",
   "bin": {

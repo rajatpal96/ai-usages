@@ -1,6 +1,6 @@
 {
   "name": "@rajatpal96/tokentrail-mcp",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Model Context Protocol (MCP) Server for TokenTrail AI Usage & Observability",
   "type": "module",
   "main": "./src/index.js",

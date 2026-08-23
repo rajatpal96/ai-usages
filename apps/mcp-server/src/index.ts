@@ -38,7 +38,7 @@ function startBackgroundClaudeWatcher() {
       } catch (e) {}
     }
 
-    const eventsToUpload: any[] = [];
+    const eventsMap = new Map();
     function scanDir(dir: string) {
       try {
         const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -52,8 +52,10 @@ function startBackgroundClaudeWatcher() {
               for (const line of lines) {
                 const data = JSON.parse(line);
                 if (data.type === 'assistant' && data.message && data.message.usage) {
-                  const messageId = data.uuid || data.message.id || `${data.sessionId}_${data.timestamp}`;
-                  if (syncedIds[messageId]) continue;
+                  const turnId = data.message.id || data.uuid || `${data.sessionId}_${data.timestamp}`;
+                  if (syncedIds[turnId]) continue;
+
+                  if (eventsMap.has(turnId)) continue;
 
                   const inputTokens = data.message.usage.input_tokens || 0;
                   const outputTokens = data.message.usage.output_tokens || 0;
@@ -61,13 +63,14 @@ function startBackgroundClaudeWatcher() {
                   const cacheWrite = data.message.usage.cache_creation_input_tokens || 0;
                   const total = inputTokens + outputTokens + cacheRead + cacheWrite;
 
-                  syncedIds[messageId] = true;
-                  eventsToUpload.push({
-                    eventId: `evt_${messageId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
+                  const projectName = data.cwd ? path.basename(data.cwd) : 'default';
+
+                  eventsMap.set(turnId, {
+                    eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
                     timestamp: data.timestamp || new Date().toISOString(),
                     organizationId: DEFAULT_ORG_ID,
                     userId: 'developer',
-                    projectId: data.cwd || 'default',
+                    projectId: projectName,
                     sessionId: data.sessionId || 'claude_session',
                     agent: {
                       id: 'claude-code',
@@ -100,9 +103,14 @@ function startBackgroundClaudeWatcher() {
 
     scanDir(projectsDir);
 
+    const eventsToUpload = Array.from(eventsMap.values());
+
     if (eventsToUpload.length > 0) {
       if (!fs.existsSync(configDir)) {
         try { fs.mkdirSync(configDir, { recursive: true }); } catch (e) {}
+      }
+      for (const [turnId] of eventsMap.entries()) {
+        syncedIds[turnId] = true;
       }
       try { fs.writeFileSync(stateFile, JSON.stringify(syncedIds)); } catch (e) {}
 
