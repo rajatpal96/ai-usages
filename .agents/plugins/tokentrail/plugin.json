@@ -1,0 +1,19 @@
+{
+  "name": "tokentrail",
+  "version": "1.0.0",
+  "description": "TokenTrail AI Agent Usage, Observability, Cost Intelligence & Token Tracking Plugin for Antigravity and Gemini",
+  "author": {
+    "name": "TokenTrail Team"
+  },
+  "license": "MIT",
+  "keywords": [
+    "tokentrail",
+    "agentmeter",
+    "observability",
+    "token-tracking",
+    "cost-intelligence",
+    "mcp",
+    "antigravity",
+    "gemini"
+  ]
+}
