@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Shield, Mail, Lock, Sparkles, CheckCircle2, X, Github, Chrome, User, Building2, Briefcase } from 'lucide-react';
+import { Shield, Mail, Lock, Sparkles, CheckCircle2, X, Github, Chrome, User, Building2, Briefcase, ArrowRight } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -21,6 +21,8 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
 
   // Check if opened via CLI login loopback
   const [cliCallback, setCliCallback] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [currentToken, setCurrentToken] = useState<string | null>(null);
 
   React.useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -28,6 +30,14 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
       const callback = params.get('cli_callback') || params.get('callback');
       if (callback) {
         setCliCallback(callback);
+      }
+      const token = localStorage.getItem('tokentrail_token') || localStorage.getItem('agentmeter_token');
+      const userStr = localStorage.getItem('tokentrail_user') || localStorage.getItem('agentmeter_user');
+      if (token && userStr) {
+        try {
+          setCurrentToken(token);
+          setCurrentUser(JSON.parse(userStr));
+        } catch (e) {}
       }
     }
   }, []);
@@ -161,11 +171,30 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
         )}
 
         {cliCallback && (
-          <div className="p-3 rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-200 text-xs flex items-center gap-2">
+          <div className="p-3.5 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-200 text-xs flex items-center gap-2.5">
             <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
             <div>
               <span className="font-semibold text-white">CLI Authentication:</span> Log in to link your terminal and auto-populate your MCP agent tokens.
             </div>
+          </div>
+        )}
+
+        {cliCallback && currentUser && currentToken && (
+          <div className="p-4 rounded-2xl bg-emerald-950/50 border border-emerald-500/30 text-emerald-100 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider font-mono">Active Session Detected</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono">Ready</span>
+            </div>
+            <p className="text-xs text-slate-300">
+              Logged in as <strong className="text-white">{currentUser.email || currentUser.name}</strong> ({currentUser.organizationId || 'org_default'}).
+            </p>
+            <button
+              onClick={() => handleAuthSuccess(currentUser, currentToken)}
+              className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md shadow-emerald-600/30 transition-all flex items-center justify-center gap-2 hover:scale-[1.01]"
+            >
+              <span>Authorize Terminal & Link CLI</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
           </div>
         )}
 
