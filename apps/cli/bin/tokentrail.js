@@ -6,6 +6,7 @@ import os from 'os';
 import readline from 'readline';
 import http from 'http';
 import { exec, spawn } from 'child_process';
+import Database from 'better-sqlite3';
 
 const CONFIG_DIR = path.join(os.homedir(), '.tokentrail');
 const LEGACY_CONFIG_DIR = path.join(os.homedir(), '.agentpulse');
