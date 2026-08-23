@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -16,6 +19,113 @@ const INGEST_BASE_URL = process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTME
 const API_KEY = process.env.TOKENTRAIL_API_KEY || process.env.AGENTMETER_API_KEY || process.env.API_KEY || '';
 const MCP_ACCESS_TOKEN = process.env.MCP_ACCESS_TOKEN || '';
 const DEFAULT_ORG_ID = process.env.TOKENTRAIL_ORG_ID || process.env.DEFAULT_ORG_ID || 'org_default';
+
+/**
+ * Silent Background Claude Code Transcript & Session Auto-Sync
+ */
+function startBackgroundClaudeWatcher() {
+  const homeDir = os.homedir();
+  const projectsDir = path.join(homeDir, '.claude', 'projects');
+  const configDir = path.join(homeDir, '.tokentrail');
+  const stateFile = path.join(configDir, 'claude_synced.json');
+
+  const sync = async () => {
+    if (!fs.existsSync(projectsDir)) return;
+    let syncedIds: Record<string, boolean> = {};
+    if (fs.existsSync(stateFile)) {
+      try {
+        syncedIds = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+      } catch (e) {}
+    }
+
+    const eventsToUpload: any[] = [];
+    function scanDir(dir: string) {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            scanDir(fullPath);
+          } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+            try {
+              const lines = fs.readFileSync(fullPath, 'utf-8').split('\n').filter(Boolean);
+              for (const line of lines) {
+                const data = JSON.parse(line);
+                if (data.type === 'assistant' && data.message && data.message.usage) {
+                  const messageId = data.uuid || data.message.id || `${data.sessionId}_${data.timestamp}`;
+                  if (syncedIds[messageId]) continue;
+
+                  const inputTokens = data.message.usage.input_tokens || 0;
+                  const outputTokens = data.message.usage.output_tokens || 0;
+                  const cacheRead = data.message.usage.cache_read_input_tokens || 0;
+                  const cacheWrite = data.message.usage.cache_creation_input_tokens || 0;
+                  const total = inputTokens + outputTokens + cacheRead + cacheWrite;
+
+                  syncedIds[messageId] = true;
+                  eventsToUpload.push({
+                    eventId: `evt_${messageId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
+                    timestamp: data.timestamp || new Date().toISOString(),
+                    organizationId: DEFAULT_ORG_ID,
+                    userId: 'developer',
+                    projectId: data.cwd || 'default',
+                    sessionId: data.sessionId || 'claude_session',
+                    agent: {
+                      id: 'claude-code',
+                      name: 'claude-code',
+                      version: data.version || '2.1.x',
+                      type: 'coding_cli',
+                    },
+                    provider: {
+                      name: 'anthropic',
+                    },
+                    model: {
+                      name: data.message.model || 'claude-3-7-sonnet',
+                    },
+                    usage: {
+                      inputTokens,
+                      outputTokens,
+                      cacheReadTokens: cacheRead,
+                      cacheWriteTokens: cacheWrite,
+                      totalTokens: total,
+                    },
+                    status: 'success',
+                  });
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    }
+
+    scanDir(projectsDir);
+
+    if (eventsToUpload.length > 0) {
+      if (!fs.existsSync(configDir)) {
+        try { fs.mkdirSync(configDir, { recursive: true }); } catch (e) {}
+      }
+      try { fs.writeFileSync(stateFile, JSON.stringify(syncedIds)); } catch (e) {}
+
+      const ingestEndpoint = `${INGEST_BASE_URL}/v1/events/batch`;
+      for (let i = 0; i < eventsToUpload.length; i += 50) {
+        const batch = eventsToUpload.slice(i, i + 50);
+        try {
+          await fetch(ingestEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(API_KEY || MCP_ACCESS_TOKEN ? { Authorization: `Bearer ${API_KEY || MCP_ACCESS_TOKEN}` } : {}),
+            },
+            body: JSON.stringify({ events: batch }),
+          }).catch(() => null);
+        } catch (e) {}
+      }
+    }
+  };
+
+  sync().catch(() => null);
+  setInterval(() => sync().catch(() => null), 3000);
+}
 
 /**
  * Helper to call the Central AgentMeter REST API
@@ -377,6 +487,8 @@ export async function runMcpStdio() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info({ apiBaseUrl: API_BASE_URL }, '🔌 AgentMeter Zero-DB Lightweight MCP Client connected via stdio');
+  // Start silent auto-sync in background
+  startBackgroundClaudeWatcher();
 }
 
 if (process.argv[1] && process.argv[1].includes('apps/mcp-server')) {

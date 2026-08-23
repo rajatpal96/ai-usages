@@ -5,7 +5,7 @@ import fs from 'fs';
 import os from 'os';
 import readline from 'readline';
 import http from 'http';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 
 const CONFIG_DIR = path.join(os.homedir(), '.tokentrail');
 const LEGACY_CONFIG_DIR = path.join(os.homedir(), '.agentpulse');
@@ -442,10 +442,48 @@ function saveConfig(cfg) {
   } catch (e) {}
 }
 
+function isDaemonRunning() {
+  const pidFile = path.join(CONFIG_DIR, 'daemon.pid');
+  if (fs.existsSync(pidFile)) {
+    try {
+      const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+      process.kill(pid, 0);
+      return pid;
+    } catch (e) {
+      try { fs.unlinkSync(pidFile); } catch (err) {}
+    }
+  }
+  return false;
+}
+
+function startBackgroundDaemon() {
+  if (isDaemonRunning()) return;
+  ensureConfigDir();
+  try {
+    const child = spawn(process.execPath, [process.argv[1] || __filename, '__daemon_worker'], {
+      detached: true,
+      stdio: 'ignore',
+      env: process.env,
+    });
+    child.unref();
+    fs.writeFileSync(path.join(CONFIG_DIR, 'daemon.pid'), child.pid.toString());
+  } catch (e) {}
+}
+
 const args = process.argv.slice(2);
 const command = args[0] || 'status';
 const targetAgent = args[1];
 const hookManager = new SafeHookManager();
+
+if (command === '__daemon_worker') {
+  const cfg = loadConfig();
+  setInterval(() => {
+    hookManager.syncClaudeLogs(cfg.apiUrl, cfg.apiKey || cfg.token, cfg.organizationId).catch(() => null);
+  }, 2500);
+} else {
+  // Automatically start silent background daemon
+  startBackgroundDaemon();
+}
 
 async function main() {
   const config = loadConfig();
