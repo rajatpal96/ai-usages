@@ -300,12 +300,28 @@ class SafeHookManager {
                 syncedIds[messageId] = true;
                 if (data.sessionId) sessionSet.add(data.sessionId);
 
+                // Extract tool calls and reasoning snippet
+                const toolsUsed = [];
+                let thinkingText = '';
+                if (Array.isArray(data.message.content)) {
+                  for (const block of data.message.content) {
+                    if (block.type === 'tool_use' && block.name) {
+                      toolsUsed.push(block.name);
+                    }
+                    if (block.type === 'thinking' && block.thinking) {
+                      thinkingText = block.thinking.slice(0, 200);
+                    }
+                  }
+                }
+
+                const projectName = data.cwd ? path.basename(data.cwd) : 'default';
+
                 eventsToUpload.push({
                   eventId: `evt_${messageId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
                   timestamp: data.timestamp || new Date().toISOString(),
                   organizationId: orgId || 'org_default',
                   userId: 'developer',
-                  projectId: data.cwd || 'default',
+                  projectId: projectName,
                   sessionId: data.sessionId || 'claude_session',
                   agent: {
                     id: 'claude-code',
@@ -325,6 +341,14 @@ class SafeHookManager {
                     cacheReadTokens: cacheRead,
                     cacheWriteTokens: cacheWrite,
                     totalTokens: total,
+                  },
+                  metadata: {
+                    cwd: data.cwd,
+                    projectName,
+                    tools: toolsUsed,
+                    toolCount: toolsUsed.length,
+                    stopReason: data.message.stop_reason,
+                    thinkingSnippet: thinkingText || undefined,
                   },
                   status: 'success',
                 });
@@ -478,9 +502,25 @@ const hookManager = new SafeHookManager();
 
 if (command === '__daemon_worker') {
   const cfg = loadConfig();
-  setInterval(() => {
+  const triggerSync = () => {
     hookManager.syncClaudeLogs(cfg.apiUrl, cfg.apiKey || cfg.token, cfg.organizationId).catch(() => null);
-  }, 2500);
+  };
+
+  // Instant trigger
+  triggerSync();
+
+  // 1. File watcher on ~/.claude/projects for instantaneous 0-delay ingestion
+  const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+  if (fs.existsSync(projectsDir)) {
+    try {
+      fs.watch(projectsDir, { recursive: true }, () => {
+        triggerSync();
+      });
+    } catch (e) {}
+  }
+
+  // 2. High-frequency 1.5s polling loop fallback
+  setInterval(triggerSync, 1500);
 } else {
   // Automatically start silent background daemon
   startBackgroundDaemon();

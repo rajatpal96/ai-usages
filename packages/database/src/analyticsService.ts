@@ -129,11 +129,43 @@ export class AnalyticsService {
       budgetUsd: 250, // default budget reference
     }));
 
-    // 5. Recent Sessions
-    const recentSessions = await Session.find({ organizationId })
+    // 5. Recent Sessions (Query Session collection or aggregate dynamically from UsageEventModel)
+    let recentSessions = await Session.find({ organizationId })
       .sort({ startTime: -1 })
       .limit(6)
       .lean();
+
+    if (!recentSessions || recentSessions.length === 0) {
+      const sessionAgg = await UsageEventModel.aggregate([
+        { $match: matchStage },
+        {
+          $group: {
+            _id: '$sessionId',
+            agentName: { $last: '$agent.name' },
+            modelName: { $last: '$model.name' },
+            totalTokens: { $sum: '$usage.totalTokens' },
+            totalCostUsd: { $sum: '$cost.total' },
+            startTime: { $min: '$timestamp' },
+            lastEventTime: { $max: '$timestamp' },
+            eventCount: { $sum: 1 },
+          },
+        },
+        { $sort: { lastEventTime: -1 } },
+        { $limit: 6 },
+      ]);
+
+      recentSessions = sessionAgg.map((s) => ({
+        sessionId: s._id,
+        agentName: s.agentName || 'claude-code',
+        model: s.modelName,
+        totalTokens: s.totalTokens,
+        totalCostUsd: Number(s.totalCostUsd.toFixed(4)),
+        startTime: s.startTime,
+        lastEventTime: s.lastEventTime,
+        durationMs: Math.max(1000, new Date(s.lastEventTime).getTime() - new Date(s.startTime).getTime()),
+        eventCount: s.eventCount,
+      })) as any;
+    }
 
     return {
       totalRequests: overallSummary?.totalRequests || 0,
@@ -309,26 +341,56 @@ export class AnalyticsService {
    */
   async listSessions(organizationId: string, options: { agent?: string; project?: string; limit?: number; offset?: number }) {
     const query: any = { organizationId };
-    if (options.agent) query.agentName = options.agent;
+    if (options.agent && options.agent !== 'all') query['agent.name'] = options.agent;
     if (options.project) query.projectId = options.project;
 
     const limit = Math.min(options.limit || 50, 100);
     const offset = options.offset || 0;
 
-    const [total, sessions] = await Promise.all([
-      Session.countDocuments(query),
-      Session.find(query)
-        .sort({ startTime: -1 })
-        .skip(offset)
-        .limit(limit)
-        .lean(),
-    ]);
+    let dbSessions = await Session.find({ organizationId })
+      .sort({ startTime: -1 })
+      .skip(offset)
+      .limit(limit)
+      .lean();
+
+    if (!dbSessions || dbSessions.length === 0) {
+      const sessionAgg = await UsageEventModel.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: '$sessionId',
+            agentName: { $last: '$agent.name' },
+            model: { $last: '$model.name' },
+            totalTokens: { $sum: '$usage.totalTokens' },
+            totalCostUsd: { $sum: '$cost.total' },
+            startTime: { $min: '$timestamp' },
+            lastEventTime: { $max: '$timestamp' },
+            eventCount: { $sum: 1 },
+          },
+        },
+        { $sort: { lastEventTime: -1 } },
+        { $skip: offset },
+        { $limit: limit },
+      ]);
+
+      dbSessions = sessionAgg.map((s) => ({
+        sessionId: s._id,
+        agentName: s.agentName || 'claude-code',
+        model: s.model,
+        totalTokens: s.totalTokens,
+        totalCostUsd: Number(s.totalCostUsd.toFixed(4)),
+        startTime: s.startTime,
+        lastEventTime: s.lastEventTime,
+        durationMs: Math.max(1000, new Date(s.lastEventTime).getTime() - new Date(s.startTime).getTime()),
+        eventCount: s.eventCount,
+      })) as any;
+    }
 
     return {
-      total,
+      total: dbSessions.length,
       limit,
       offset,
-      sessions,
+      sessions: dbSessions,
     };
   }
 
@@ -336,12 +398,31 @@ export class AnalyticsService {
    * GET /v1/sessions/:id
    */
   async getSessionDetail(organizationId: string, sessionId: string) {
-    const session = await Session.findOne({ organizationId, sessionId }).lean();
-    if (!session) return null;
+    let session = await Session.findOne({ organizationId, sessionId }).lean();
 
     const events = await UsageEventModel.find({ organizationId, sessionId })
       .sort({ timestamp: 1 })
       .lean();
+
+    if (!session && events.length > 0) {
+      const first = events[0];
+      const last = events[events.length - 1];
+      const totalTokens = events.reduce((acc, e) => acc + (e.usage?.totalTokens || 0), 0);
+      const totalCostUsd = events.reduce((acc, e) => acc + (e.cost?.total || 0), 0);
+
+      session = {
+        sessionId,
+        organizationId,
+        agentName: first.agent?.name || 'claude-code',
+        model: first.model?.name,
+        totalTokens,
+        totalCostUsd: Number(totalCostUsd.toFixed(4)),
+        startTime: first.timestamp,
+        lastEventTime: last.timestamp,
+        durationMs: Math.max(1000, new Date(last.timestamp).getTime() - new Date(first.timestamp).getTime()),
+        eventCount: events.length,
+      } as any;
+    }
 
     return {
       session,
