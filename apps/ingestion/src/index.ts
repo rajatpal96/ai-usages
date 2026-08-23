@@ -89,13 +89,13 @@ async function authMiddleware(req: Request, res: Response, next: NextFunction) {
 // -------------------------------------------------------------
 app.post('/v1/events', authMiddleware, async (req: Request, res: Response) => {
   const startTime = Date.now();
-  const orgId = (req as any).organizationId || config.DEFAULT_ORG_ID;
+  const orgId = (req as any).organizationId || req.body?.organizationId || config.DEFAULT_ORG_ID;
 
   try {
     const rawBody = req.body;
 
     const normalized: UsageEvent = adapterRegistry.normalize(rawBody, {
-      organizationId: orgId,
+      organizationId: (rawBody && rawBody.organizationId) || orgId,
       userId: (req as any).userId || rawBody.userId,
       projectId: rawBody.projectId,
       sessionId: rawBody.sessionId,
@@ -155,7 +155,7 @@ app.post('/v1/events', authMiddleware, async (req: Request, res: Response) => {
 // -------------------------------------------------------------
 app.post('/v1/events/batch', authMiddleware, async (req: Request, res: Response) => {
   const startTime = Date.now();
-  const orgId = (req as any).organizationId || config.DEFAULT_ORG_ID;
+  const orgId = (req as any).organizationId || req.body?.organizationId || config.DEFAULT_ORG_ID;
 
   try {
     const rawEvents: any[] = Array.isArray(req.body) ? req.body : req.body.events;
@@ -167,8 +167,9 @@ app.post('/v1/events/batch', authMiddleware, async (req: Request, res: Response)
     const eventIds: string[] = [];
 
     for (const raw of rawEvents) {
+      const eventOrgId = (raw && raw.organizationId) || orgId;
       const normalized = adapterRegistry.normalize(raw, {
-        organizationId: orgId,
+        organizationId: eventOrgId,
         userId: (req as any).userId || raw.userId,
         projectId: raw.projectId,
         sessionId: raw.sessionId,

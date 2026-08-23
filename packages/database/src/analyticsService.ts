@@ -34,7 +34,7 @@ export class AnalyticsService {
     const { start, end } = parseTimeRange(rangeStr);
 
     const matchStage = {
-      organizationId,
+      organizationId: organizationId === 'org_default' ? 'org_default' : { $in: [organizationId, 'org_default', 'EXT'] },
       timestamp: { $gte: start, $lte: end },
     };
 
