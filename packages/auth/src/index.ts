@@ -45,7 +45,23 @@ const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
 };
 
 export function getRolePermissions(role: UserRole): string[] {
-  return ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.viewer;
+  return ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.engineer;
+}
+
+export function normalizeUserRole(inputRole?: string): UserRole {
+  if (!inputRole) return 'engineer';
+  const lower = inputRole.toLowerCase().trim();
+  if (lower.includes('admin') || lower.includes('owner') || lower.includes('lead')) {
+    if (lower.includes('finance')) return 'finance_lead';
+    if (lower.includes('admin') || lower.includes('owner')) return 'admin';
+  }
+  if (lower.includes('finance') || lower.includes('billing')) return 'finance_lead';
+  if (lower.includes('viewer') || lower.includes('guest') || lower.includes('read')) return 'viewer';
+  return 'engineer';
+}
+
+export function hashPassword(password: string): string {
+  return crypto.createHash('sha256').update(password).digest('hex');
 }
 
 export function hasPermission(userRole: UserRole, requiredPermission: string): boolean {

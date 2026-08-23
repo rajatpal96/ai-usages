@@ -87,7 +87,30 @@ Validates:
 
 ---
 
-## 🚀 3. Production Deployment
+## 🚀 3. One-Click Automated Deployment
+
+Deploy your code changes with automated validation and git push using a single command:
+
+```bash
+# 1. Standard one-command deployment (Builds, runs tests, commits, and pushes to GitHub)
+npm run deploy
+
+# Or pass a custom commit message:
+./scripts/deploy.sh "Add signup endpoint and CORS preflight"
+
+# Quick deployment (skip test suite):
+npm run deploy:quick
+
+# Deploy with Docker rebuild:
+./scripts/deploy.sh "Release update" --docker
+
+# Deploy with Vercel CLI:
+./scripts/deploy.sh "Release update" --vercel
+```
+
+---
+
+## 🌐 4. Production Deployment Methods
 
 ### A. Deploy UI Dashboard (`agent-pulse-ui`) ➔ **Vercel**
 
@@ -155,7 +178,7 @@ API_PORT=4000
 INGESTION_PORT=4001
 DEFAULT_ORG_ID=org_default
 JWT_SECRET=your-secure-32-char-secret-key-here
-MONGODB_URI=mongodb+srv://username:password@cluster0.yourcompany.mongodb.net/agentmeter?retryWrites=true&w=majority
+MONGODB_URI=mongodb+srv://emora96:iNUvY8Tt8Z5iqB9Z@saras-crwaled.gdneps4.mongodb.net/crawled_data?retryWrites=true&w=majority&appName=saras-crwaled&minPoolSize=20&maxPoolSize=150&maxIdleTimeMS=60000
 EOF
 ```
 

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Shield, Mail, Lock, Sparkles, CheckCircle2, X, Github, Chrome } from 'lucide-react';
+import { Shield, Mail, Lock, Sparkles, CheckCircle2, X, Github, Chrome, User, Building2, Briefcase } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -10,9 +10,12 @@ interface AuthModalProps {
 }
 
 export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
-  const [activeTab, setActiveTab] = useState<'sso' | 'email'>('sso');
+  const [activeTab, setActiveTab] = useState<'sso' | 'signin' | 'signup'>('sso');
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [organization, setOrganization] = useState('');
+  const [role, setRole] = useState('AI Platform Engineer');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,9 +75,41 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     }
   };
 
+  const handleEmailSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/v1/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name || email.split('@')[0],
+          email,
+          password,
+          organization: organization || 'EXT',
+          role: role || 'AI Platform Engineer',
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.token) {
+        localStorage.setItem('agentmeter_token', data.token);
+        localStorage.setItem('agentmeter_user', JSON.stringify(data.profile));
+        onSuccess(data.profile, data.token);
+        onClose();
+      } else {
+        setError(data.error || 'Signup failed');
+      }
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-slate-950 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6 relative overflow-hidden">
+      <div className="w-full max-w-md bg-slate-950 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-5 relative overflow-hidden">
         {/* Glow */}
         <div className="absolute -top-24 -left-24 w-48 h-48 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none" />
 
@@ -85,7 +120,7 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
             </div>
             <div>
               <h3 className="font-bold text-base text-white">AgentMeter Identity Layer</h3>
-              <p className="text-xs text-slate-400">Enterprise SSO & Multi-Tenant Login</p>
+              <p className="text-xs text-slate-400">Enterprise SSO & Multi-Tenant Access</p>
             </div>
           </div>
           <button
@@ -110,15 +145,23 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
               activeTab === 'sso' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
             }`}
           >
-            Identity Providers (SSO)
+            SSO
           </button>
           <button
-            onClick={() => setActiveTab('email')}
+            onClick={() => setActiveTab('signin')}
             className={`flex-1 py-1.5 rounded-lg transition-all ${
-              activeTab === 'email' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
+              activeTab === 'signin' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
             }`}
           >
-            Email / Password
+            Sign In
+          </button>
+          <button
+            onClick={() => setActiveTab('signup')}
+            className={`flex-1 py-1.5 rounded-lg transition-all ${
+              activeTab === 'signup' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Sign Up
           </button>
         </div>
 
@@ -160,7 +203,7 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
               <span>Enterprise SAML 2.0 / OIDC SSO</span>
             </button>
           </div>
-        ) : (
+        ) : activeTab === 'signin' ? (
           <form onSubmit={handleEmailLogin} className="space-y-4">
             <div>
               <label className="text-[11px] font-medium text-slate-400 mb-1 block">Work Email</label>
@@ -200,6 +243,91 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
               {loading ? 'Signing in...' : 'Sign In with Email'}
             </button>
           </form>
+        ) : (
+          <form onSubmit={handleEmailSignup} className="space-y-3">
+            <div>
+              <label className="text-[11px] font-medium text-slate-400 mb-1 block">Full Name</label>
+              <div className="relative">
+                <User className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  required
+                  placeholder="Rajat"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-medium text-slate-400 mb-1 block">Work Email</label>
+              <div className="relative">
+                <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+                <input
+                  type="email"
+                  required
+                  placeholder="rajatkokila96@gmail.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-medium text-slate-400 mb-1 block">Password</label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+                <input
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[11px] font-medium text-slate-400 mb-1 block">Organization</label>
+                <div className="relative">
+                  <Building2 className="w-4 h-4 text-slate-500 absolute left-2.5 top-2.5" />
+                  <input
+                    type="text"
+                    placeholder="EXT"
+                    value={organization}
+                    onChange={(e) => setOrganization(e.target.value)}
+                    className="w-full pl-8 pr-2 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-medium text-slate-400 mb-1 block">Role</label>
+                <div className="relative">
+                  <Briefcase className="w-4 h-4 text-slate-500 absolute left-2.5 top-2.5" />
+                  <input
+                    type="text"
+                    placeholder="AI Platform Engineer"
+                    value={role}
+                    onChange={(e) => setRole(e.target.value)}
+                    className="w-full pl-8 pr-2 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full mt-2 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/30 transition-all"
+            >
+              {loading ? 'Creating Account...' : 'Create Account'}
+            </button>
+          </form>
         )}
 
         <div className="text-[11px] text-slate-500 text-center border-t border-slate-800/60 pt-3">
@@ -209,3 +337,4 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     </div>
   );
 }
+

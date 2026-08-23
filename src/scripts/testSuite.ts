@@ -113,7 +113,7 @@ async function runAllTests() {
   console.log(`   ✅ SQLite queue active (Queue Depth: ${doctorReport.queueDepth}, Status: ${doctorReport.status}).\n`);
 
   // 4. Testing Identity Layer & SSO Authentication
-  console.log('🔹 4. Testing Identity Layer (Email, Google, GitHub, Microsoft, SAML SSO)...');
+  console.log('🔹 4. Testing Identity Layer (Email, Google, GitHub, Microsoft, SAML SSO, Signup)...');
   const userProfile: UserProfile = {
     userId: 'usr_sarah_101',
     email: 'sarah.engineer@acme.com',
@@ -128,7 +128,53 @@ async function runAllTests() {
   assert(verifiedProfile !== null, 'User JWT should verify successfully');
   assert.strictEqual(verifiedProfile?.email, 'sarah.engineer@acme.com');
   assert.strictEqual(verifiedProfile?.provider, 'google');
-  console.log('   ✅ Identity Layer successfully issued and verified signed JWT for Google SSO user.\n');
+
+  // Start API server for HTTP endpoint tests
+  try { await startApiServer(4000); } catch (e) {}
+
+  // Test CORS preflight (OPTIONS /api/v1/auth/signup)
+  const optionsRes = await fetch('http://localhost:4000/api/v1/auth/signup', {
+    method: 'OPTIONS',
+    headers: {
+      'Origin': 'http://localhost:3000',
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'Content-Type, Authorization',
+    },
+  });
+  assert(optionsRes.status === 200 || optionsRes.status === 204, 'OPTIONS /api/v1/auth/signup should return 200 or 204');
+  assert(optionsRes.headers.get('access-control-allow-methods')?.includes('POST'), 'CORS preflight should allow POST');
+  console.log('   ✅ CORS preflight OPTIONS /api/v1/auth/signup verified successfully.');
+
+  // Test POST /api/v1/auth/signup endpoint
+  await User.deleteMany({ email: 'rajatkokila96@gmail.com' });
+  const signupPayload = {
+    name: 'Rajat',
+    email: 'rajatkokila96@gmail.com',
+    password: 'Rajat_6310',
+    organization: 'EXT',
+    role: 'AI Platform Engineer',
+  };
+  const signupRes = await fetch('http://localhost:4000/api/v1/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(signupPayload),
+  });
+  const signupData = (await signupRes.json()) as any;
+  assert(signupRes.status === 201, `Signup should return 201 created. Got ${signupRes.status}: ${JSON.stringify(signupData)}`);
+  assert(signupData.token, 'Signup should return JWT token');
+  assert.strictEqual(signupData.user.email, 'rajatkokila96@gmail.com');
+  assert.strictEqual(signupData.user.name, 'Rajat');
+  assert.strictEqual(signupData.user.organization, 'EXT');
+  assert.strictEqual(signupData.user.role, 'AI Platform Engineer');
+
+  // Test duplicate signup returns 409 Conflict
+  const duplicateRes = await fetch('http://localhost:4000/api/v1/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(signupPayload),
+  });
+  assert(duplicateRes.status === 409, 'Duplicate signup should return 409 Conflict');
+  console.log('   ✅ POST /api/v1/auth/signup created user and returned signed JWT profile.\n');
 
   // 5. Testing Authorization Layer (RBAC)
   console.log('🔹 5. Testing Authorization Layer (RBAC)...');

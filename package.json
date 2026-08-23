@@ -22,7 +22,9 @@
     "test": "tsx src/scripts/testSuite.ts",
     "test:metrics": "tsx src/scripts/testSuite.ts",
     "simulate": "tsx src/scripts/simulate.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "deploy": "./scripts/deploy.sh",
+    "deploy:quick": "./scripts/deploy.sh --skip-tests"
   },
   "keywords": [
     "agentmeter",

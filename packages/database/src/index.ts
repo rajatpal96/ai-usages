@@ -68,6 +68,7 @@ export interface IUser extends Document {
   name: string;
   email: string;
   role: string;
+  passwordHash?: string;
   createdAt: Date;
 }
 
@@ -77,6 +78,7 @@ export const UserSchema = new Schema<IUser>({
   name: { type: String, required: true },
   email: { type: String, required: true },
   role: { type: String, default: 'developer' },
+  passwordHash: { type: String },
 }, { timestamps: true });
 
 UserSchema.index({ organizationId: 1, email: 1 });

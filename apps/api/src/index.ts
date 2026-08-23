@@ -11,6 +11,7 @@ import {
   Pricing,
   ApiKey,
   User,
+  Organization,
   Project,
   Agent,
 } from '../../../packages/database/src/index.js';
@@ -18,6 +19,9 @@ import {
   generateApiKey,
   extractAuthToken,
   hashApiKey,
+  hashPassword,
+  normalizeUserRole,
+  getRolePermissions,
   issueUserToken,
   verifyUserToken,
   issueMcpAccessToken,
@@ -33,6 +37,16 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// Explicit CORS Preflight handler for preflight requests
+app.options(['/api/v1/auth/signup', '/v1/auth/signup', '/api/v1/auth/login', '/v1/auth/login', '*'], (req: Request, res: Response) => {
+  res.header('Access-Control-Allow-Origin', (req.headers.origin as string) || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-organization-id, Accept');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '86400');
+  return res.status(204).end();
+});
 
 // -------------------------------------------------------------
 // Authentication & Identity Layer Middleware
@@ -110,9 +124,89 @@ app.use(authMiddleware);
 // 1. Identity Provider Endpoints (Identity Layer)
 // -------------------------------------------------------------
 
-// POST /v1/auth/login (Email / Password)
-app.post('/v1/auth/login', async (req: Request, res: Response) => {
-  const { email, password, organizationId = config.DEFAULT_ORG_ID } = req.body;
+// POST /api/v1/auth/signup & /v1/auth/signup
+app.post(['/api/v1/auth/signup', '/v1/auth/signup'], async (req: Request, res: Response) => {
+  try {
+    const { name, email, password, organization, organizationId, role } = req.body || {};
+
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    const orgId = organization || organizationId || config.DEFAULT_ORG_ID;
+    const userName = name || email.split('@')[0];
+    const userRoleStr = role || 'AI Platform Engineer';
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ error: `User with email '${email}' already exists` });
+    }
+
+    // Auto-create Organization if not present
+    const orgDoc = await Organization.findOne({ orgId });
+    if (!orgDoc) {
+      await Organization.create({
+        orgId,
+        name: organization || orgId,
+        plan: 'enterprise',
+      }).catch(() => null);
+    }
+
+    const userId = `usr_${email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '')}_${Math.floor(1000 + Math.random() * 9000)}`;
+    const passwordHash = hashPassword(password);
+
+    const user = await User.create({
+      userId,
+      email,
+      name: userName,
+      organizationId: orgId,
+      role: userRoleStr,
+      passwordHash,
+    });
+
+    const mappedRole: UserRole = normalizeUserRole(userRoleStr);
+    const profile: UserProfile = {
+      userId: user.userId,
+      email: user.email,
+      name: user.name,
+      organizationId: user.organizationId,
+      role: mappedRole,
+      provider: 'email',
+      permissions: getRolePermissions(mappedRole),
+    };
+
+    const token = issueUserToken(profile);
+
+    return res.status(201).json({
+      status: 'success',
+      message: 'User registered successfully',
+      token,
+      profile,
+      user: {
+        userId: user.userId,
+        name: user.name,
+        email: user.email,
+        organization: orgId,
+        organizationId: user.organizationId,
+        role: user.role,
+        createdAt: user.createdAt,
+      },
+    });
+  } catch (err: any) {
+    log.error({ err: err.message }, 'Failed to process user signup');
+    return res.status(500).json({ error: err.message || 'Internal server error during signup' });
+  }
+});
+
+// POST /api/v1/auth/login & /v1/auth/login (Email / Password)
+app.post(['/api/v1/auth/login', '/v1/auth/login'], async (req: Request, res: Response) => {
+  const { email, password, organizationId = config.DEFAULT_ORG_ID, organization } = req.body || {};
+  const org = organization || organizationId;
 
   if (!email) {
     return res.status(400).json({ error: 'Email is required' });
@@ -121,23 +215,30 @@ app.post('/v1/auth/login', async (req: Request, res: Response) => {
   // Find or provision user
   let user = await User.findOne({ email });
   if (!user) {
+    const passwordHash = password ? hashPassword(password) : undefined;
     user = await User.create({
       userId: `usr_${email.split('@')[0]}_${Math.floor(Math.random() * 1000)}`,
       email,
       name: email.split('@')[0],
-      organizationId,
+      organizationId: org,
       role: email.includes('admin') ? 'admin' : 'engineer',
+      passwordHash,
     });
+  } else if (password && user.passwordHash) {
+    if (user.passwordHash !== hashPassword(password)) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
   }
 
+  const mappedRole = normalizeUserRole(user.role);
   const profile: UserProfile = {
     userId: user.userId,
     email: user.email,
     name: user.name,
     organizationId: user.organizationId,
-    role: user.role as UserRole,
+    role: mappedRole,
     provider: 'email',
-    permissions: ['metrics:read', 'metrics:write', 'mcp:read'],
+    permissions: getRolePermissions(mappedRole),
   };
 
   const token = issueUserToken(profile);
