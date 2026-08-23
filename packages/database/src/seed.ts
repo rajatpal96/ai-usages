@@ -31,10 +31,13 @@ export async function seedDatabase(organizationId: string = 'org_default') {
   );
 
   // 2. Users
+  const devPasswordHash = '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8'; // sha256 of 'password' or 'dev'
+  const devHash = 'fa8d407677b102919326f634b0785ea97669d0fb71536b04f7caeb1555a6d59b'; // sha256 of 'dev'
   const users = [
-    { userId: 'usr_alex', name: 'Alex Rivera', email: 'alex.dev@acme.com', role: 'Staff Engineer' },
-    { userId: 'usr_sarah', name: 'Sarah Chen', email: 'sarah.lead@acme.com', role: 'Tech Lead' },
-    { userId: 'usr_marcus', name: 'Marcus Vance', email: 'marcus.backend@acme.com', role: 'Backend Dev' },
+    { userId: 'usr_admin', name: 'Admin Developer', email: 'admin@acme.com', role: 'admin', passwordHash: devHash },
+    { userId: 'usr_alex', name: 'Alex Rivera', email: 'alex.dev@acme.com', role: 'Staff Engineer', passwordHash: devHash },
+    { userId: 'usr_sarah', name: 'Sarah Chen', email: 'sarah.lead@acme.com', role: 'Tech Lead', passwordHash: devHash },
+    { userId: 'usr_marcus', name: 'Marcus Vance', email: 'marcus.backend@acme.com', role: 'Backend Dev', passwordHash: devHash },
   ];
   for (const u of users) {
     await User.findOneAndUpdate({ userId: u.userId }, { ...u, organizationId }, { upsert: true });

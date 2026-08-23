@@ -178,7 +178,34 @@ async function runAllTests() {
     body: JSON.stringify(signupPayload),
   });
   assert(duplicateRes.status === 409, 'Duplicate signup should return 409 Conflict');
-  console.log('   ✅ POST /api/v1/auth/signup created user and returned signed JWT profile.\n');
+  console.log('   ✅ POST /api/v1/auth/signup created user and returned signed JWT profile.');
+
+  // Test POST /api/v1/auth/login with valid credentials
+  const validLoginRes = await fetch(`http://localhost:${apiPort}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'rajatkokila96@gmail.com', password: 'Rajat_6310' }),
+  });
+  const validLoginData = (await validLoginRes.json()) as any;
+  assert(validLoginRes.status === 200, `Login should succeed with valid credentials. Got ${validLoginRes.status}`);
+  assert(validLoginData.token, 'Login should return token');
+
+  // Test POST /api/v1/auth/login with wrong password
+  const wrongPassRes = await fetch(`http://localhost:${apiPort}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'rajatkokila96@gmail.com', password: 'wrong_password' }),
+  });
+  assert(wrongPassRes.status === 401, 'Login with incorrect password should return 401 Unauthorized');
+
+  // Test POST /api/v1/auth/login with non-existent user
+  const unknownUserRes = await fetch(`http://localhost:${apiPort}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'unknown.user@acme.com', password: 'password123' }),
+  });
+  assert(unknownUserRes.status === 401, 'Login with non-existent user should return 401 Unauthorized');
+  console.log('   ✅ POST /api/v1/auth/login verified strictly (valid login 200, wrong password 401, unknown user 401).\n');
 
   // 5. Testing Authorization Layer (RBAC)
   console.log('🔹 5. Testing Authorization Layer (RBAC)...');

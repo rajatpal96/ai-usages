@@ -205,27 +205,28 @@ app.post(['/api/v1/auth/signup', '/v1/auth/signup'], async (req: Request, res: R
 
 // POST /api/v1/auth/login & /v1/auth/login (Email / Password)
 app.post(['/api/v1/auth/login', '/v1/auth/login'], async (req: Request, res: Response) => {
-  const { email, password, organizationId = config.DEFAULT_ORG_ID, organization } = req.body || {};
-  const org = organization || organizationId;
+  const { email, password } = req.body || {};
 
   if (!email) {
     return res.status(400).json({ error: 'Email is required' });
   }
 
-  // Find or provision user
-  let user = await User.findOne({ email });
+  if (!password) {
+    return res.status(400).json({ error: 'Password is required' });
+  }
+
+  // Find user in database
+  const normalizedEmail = email.toLowerCase().trim();
+  const user = await User.findOne({ email: { $regex: new RegExp(`^${normalizedEmail}$`, 'i') } });
+
   if (!user) {
-    const passwordHash = password ? hashPassword(password) : undefined;
-    user = await User.create({
-      userId: `usr_${email.split('@')[0]}_${Math.floor(Math.random() * 1000)}`,
-      email,
-      name: email.split('@')[0],
-      organizationId: org,
-      role: email.includes('admin') ? 'admin' : 'engineer',
-      passwordHash,
-    });
-  } else if (password && user.passwordHash) {
-    if (user.passwordHash !== hashPassword(password)) {
+    return res.status(401).json({ error: 'Invalid email or password. User account not found.' });
+  }
+
+  // Verify password hash if present on user
+  if (user.passwordHash) {
+    const inputHash = hashPassword(password);
+    if (user.passwordHash !== inputHash) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
   }
@@ -242,7 +243,18 @@ app.post(['/api/v1/auth/login', '/v1/auth/login'], async (req: Request, res: Res
   };
 
   const token = issueUserToken(profile);
-  return res.json({ token, profile });
+  return res.json({
+    status: 'success',
+    token,
+    profile,
+    user: {
+      userId: user.userId,
+      name: user.name,
+      email: user.email,
+      organizationId: user.organizationId,
+      role: user.role,
+    },
+  });
 });
 
 // POST /v1/auth/sso/google, github, microsoft, saml
