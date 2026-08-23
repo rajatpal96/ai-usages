@@ -4,6 +4,8 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import readline from 'readline';
+import http from 'http';
+import { exec } from 'child_process';
 
 const CONFIG_DIR = path.join(os.homedir(), '.tokentrail');
 const LEGACY_CONFIG_DIR = path.join(os.homedir(), '.agentpulse');
@@ -33,17 +35,21 @@ class SafeHookManager {
     }
 
     const endpoint = process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1/events';
+    const config = loadConfig();
 
     const updatedConfig = {
       ...existingConfig,
       tokentrail: {
         enabled: true,
         endpoint,
+        ...(config.apiKey ? { apiKey: config.apiKey } : {}),
+        ...(config.token ? { token: config.token } : {}),
         installedAt: new Date().toISOString(),
       },
       agentpulse: {
         enabled: true,
         endpoint,
+        ...(config.apiKey ? { apiKey: config.apiKey } : {}),
         installedAt: new Date().toISOString(),
       },
     };
@@ -73,11 +79,13 @@ class SafeHookManager {
     }
 
     const endpoint = process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1/events';
+    const cliConfig = loadConfig();
 
     const config = {
       telemetryForwarding: true,
       tokentrailEndpoint: endpoint,
       agentpulseEndpoint: endpoint,
+      ...(cliConfig.apiKey ? { apiKey: cliConfig.apiKey } : {}),
       updatedAt: new Date().toISOString(),
     };
 
@@ -100,11 +108,13 @@ class SafeHookManager {
     fs.mkdirSync(codexDir, { recursive: true });
 
     const endpoint = process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz/v1';
+    const cliConfig = loadConfig();
 
     const config = {
       proxyUrl: endpoint,
       tokentrail: true,
       agentpulse: true,
+      ...(cliConfig.apiKey ? { apiKey: cliConfig.apiKey } : {}),
       installedAt: new Date().toISOString(),
     };
 
@@ -119,7 +129,7 @@ class SafeHookManager {
     };
   }
 
-  async connectAntigravity() {
+  async connectAntigravity(apiKeyOverride, tokenOverride) {
     const geminiDir = path.join(this.homeDir, '.gemini', 'config');
     const configFile = path.join(geminiDir, 'mcp_config.json');
 
@@ -133,6 +143,9 @@ class SafeHookManager {
       } catch (e) {}
     }
 
+    const cliConfig = loadConfig();
+    const apiKey = apiKeyOverride || cliConfig.apiKey || process.env.TOKENTRAIL_API_KEY || process.env.AGENTMETER_API_KEY || '';
+    const token = tokenOverride || cliConfig.token || process.env.MCP_ACCESS_TOKEN || '';
     const apiUrl = process.env.TOKENTRAIL_API_URL || process.env.AGENTMETER_API_URL || 'https://api.tokentrail.xyz';
     const ingestUrl = process.env.TOKENTRAIL_INGEST_URL || process.env.AGENTMETER_INGEST_URL || 'https://api.tokentrail.xyz';
 
@@ -144,6 +157,8 @@ class SafeHookManager {
         TOKENTRAIL_INGEST_URL: ingestUrl,
         AGENTMETER_API_URL: apiUrl,
         AGENTMETER_INGEST_URL: ingestUrl,
+        ...(apiKey ? { TOKENTRAIL_API_KEY: apiKey, AGENTMETER_API_KEY: apiKey, API_KEY: apiKey } : {}),
+        ...(token ? { MCP_ACCESS_TOKEN: token } : {}),
       },
     };
 
@@ -159,6 +174,70 @@ class SafeHookManager {
       installed: true,
       message: 'TokenTrail MCP server added to Antigravity configuration',
     };
+  }
+
+  async autoPopulateTokens(credentials) {
+    const updated = [];
+    const { apiKey, token, organizationId } = credentials;
+    const effectiveToken = apiKey || token || '';
+
+    if (!effectiveToken) return updated;
+
+    // 1. Antigravity MCP Config
+    try {
+      await this.connectAntigravity(apiKey || token, token);
+      updated.push('Google Gemini / Antigravity MCP (~/.gemini/config/mcp_config.json)');
+    } catch (e) {}
+
+    // 2. Claude Code Config
+    try {
+      const claudeDir = path.join(this.homeDir, '.claude');
+      const configFile = path.join(claudeDir, 'config.json');
+      if (fs.existsSync(configFile)) {
+        const raw = fs.readFileSync(configFile, 'utf-8');
+        const cfg = JSON.parse(raw);
+        if (cfg.tokentrail || cfg.agentpulse) {
+          if (cfg.tokentrail) {
+            cfg.tokentrail.apiKey = effectiveToken;
+            cfg.tokentrail.token = token;
+            if (organizationId) cfg.tokentrail.organizationId = organizationId;
+          }
+          if (cfg.agentpulse) {
+            cfg.agentpulse.apiKey = effectiveToken;
+            cfg.agentpulse.token = token;
+            if (organizationId) cfg.agentpulse.organizationId = organizationId;
+          }
+          fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2));
+          updated.push('Claude Code (~/.claude/config.json)');
+        }
+      }
+    } catch (e) {}
+
+    // 3. GitHub Copilot Config
+    try {
+      const copilotFile = path.join(this.homeDir, '.config', 'github-copilot', 'telemetry.json');
+      if (fs.existsSync(copilotFile)) {
+        const cfg = JSON.parse(fs.readFileSync(copilotFile, 'utf-8'));
+        cfg.apiKey = effectiveToken;
+        if (organizationId) cfg.organizationId = organizationId;
+        fs.writeFileSync(copilotFile, JSON.stringify(cfg, null, 2));
+        updated.push('GitHub Copilot (~/.config/github-copilot/telemetry.json)');
+      }
+    } catch (e) {}
+
+    // 4. Codex Config
+    try {
+      const codexFile = path.join(this.homeDir, '.codex', 'config.json');
+      if (fs.existsSync(codexFile)) {
+        const cfg = JSON.parse(fs.readFileSync(codexFile, 'utf-8'));
+        cfg.apiKey = effectiveToken;
+        if (organizationId) cfg.organizationId = organizationId;
+        fs.writeFileSync(codexFile, JSON.stringify(cfg, null, 2));
+        updated.push('Codex / OpenAI (~/.codex/config.json)');
+      }
+    } catch (e) {}
+
+    return updated;
   }
 
   async disconnect(agentName) {
@@ -181,6 +260,11 @@ class SafeHookManager {
 function ensureConfigDir() {
   if (!fs.existsSync(CONFIG_DIR)) {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(LEGACY_CONFIG_DIR)) {
+    try {
+      fs.mkdirSync(LEGACY_CONFIG_DIR, { recursive: true });
+    } catch (e) {}
   }
 }
 
@@ -208,6 +292,9 @@ function loadConfig() {
 function saveConfig(cfg) {
   ensureConfigDir();
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+  try {
+    fs.writeFileSync(path.join(LEGACY_CONFIG_DIR, 'config.json'), JSON.stringify(cfg, null, 2));
+  } catch (e) {}
 }
 
 const args = process.argv.slice(2);
@@ -222,23 +309,125 @@ async function main() {
     case 'login': {
       console.log('\n🔐 \x1b[1m\x1b[36mTokenTrail Developer Authentication\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
-      console.log('Open dashboard to authenticate: \x1b[34mhttps://tokentrail.xyz\x1b[0m\n');
 
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
+      // Start temporary local loopback server for seamless browser auth
+      const authState = Math.random().toString(36).substring(2, 15);
+      let authCompleted = false;
+
+      const server = http.createServer(async (req, res) => {
+        try {
+          const reqUrl = new URL(req.url || '/', `http://${req.headers.host}`);
+          if (reqUrl.pathname === '/callback') {
+            const token = reqUrl.searchParams.get('token') || '';
+            const apiKey = reqUrl.searchParams.get('apiKey') || token;
+            const email = reqUrl.searchParams.get('email') || '';
+            const org = reqUrl.searchParams.get('organizationId') || 'org_default';
+
+            if (token || apiKey) {
+              authCompleted = true;
+              config.token = token;
+              config.apiKey = apiKey;
+              if (email) config.email = email;
+              if (org) config.organizationId = org;
+              saveConfig(config);
+
+              // Auto-populate token into MCP & connected agents
+              const populated = await hookManager.autoPopulateTokens({
+                token,
+                apiKey,
+                email,
+                organizationId: org,
+              });
+
+              // Send beautiful dark mode success HTML
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+              res.end(`
+                <!DOCTYPE html>
+                <html>
+                  <head>
+                    <title>TokenTrail - Authentication Successful</title>
+                    <style>
+                      body { background: #0b0f19; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+                      .card { background: #131b2e; border: 1px solid #1e293b; padding: 2.5rem; border-radius: 1.5rem; text-align: center; max-width: 440px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); }
+                      .badge { display: inline-flex; width: 3.5rem; height: 3.5rem; border-radius: 50%; background: rgba(34, 197, 94, 0.15); color: #22c55e; align-items: center; justify-content: center; font-size: 1.75rem; margin-bottom: 1rem; border: 1px solid rgba(34, 197, 94, 0.3); }
+                      h2 { margin: 0 0 0.5rem 0; font-size: 1.5rem; font-weight: 700; color: #fff; }
+                      p { color: #94a3b8; font-size: 0.875rem; line-height: 1.5; margin-bottom: 1.5rem; }
+                      .tip { background: #0f172a; padding: 0.75rem 1rem; border-radius: 0.75rem; border: 1px solid #1e293b; font-size: 0.75rem; color: #64748b; font-family: monospace; }
+                    </style>
+                  </head>
+                  <body>
+                    <div class="card">
+                      <div class="badge">✔</div>
+                      <h2>Authentication Successful!</h2>
+                      <p>Your TokenTrail credentials and MCP agent tokens have been automatically configured. You can close this window and return to your terminal.</p>
+                      <div class="tip">Logged in as: ${email || 'TokenTrail Developer'}</div>
+                    </div>
+                  </body>
+                </html>
+              `);
+
+              server.close();
+
+              console.log(`\n\x1b[32m✔ Successfully authenticated via browser${email ? ` as ${email}` : ''}!\x1b[0m`);
+              console.log(`\x1b[32m✔ Credentials stored in ${CONFIG_FILE}\x1b[0m`);
+              if (populated.length > 0) {
+                console.log('\n\x1b[1m\x1b[36m⚡ Automatically Populated Agent Configurations:\x1b[0m');
+                populated.forEach((agent) => console.log(`   ✔ ${agent}`));
+              }
+              console.log('\nTokenTrail is ready. Run \x1b[33mtokentrail doctor\x1b[0m or \x1b[33mtokentrail connect <agent>\x1b[0m\n');
+              process.exit(0);
+            }
+          }
+        } catch (e) {}
       });
 
-      rl.question('Paste your API Key or JWT token: ', (token) => {
-        if (token.trim()) {
-          config.apiKey = token.trim();
-          saveConfig(config);
-          console.log('\n\x1b[32m✔ Successfully authenticated!\x1b[0m');
-          console.log(`Stored credentials in ${CONFIG_FILE}\n`);
-        } else {
-          console.log('\n\x1b[33mNo token provided. Using local development mode.\x1b[0m\n');
-        }
-        rl.close();
+      server.listen(0, '127.0.0.1', () => {
+        const port = server.address().port;
+        const callbackUrl = `http://127.0.0.1:${port}/callback`;
+        const dashboardUrl = process.env.TOKENTRAIL_DASHBOARD_URL || 'https://tokentrail.xyz';
+        const authUrl = `${dashboardUrl}?cli_callback=${encodeURIComponent(callbackUrl)}&cli_state=${authState}`;
+
+        console.log(`Opening browser for authentication:`);
+        console.log(`👉 \x1b[34m${authUrl}\x1b[0m\n`);
+
+        // Try opening browser across OS platforms
+        const openCmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+        exec(`${openCmd} "${authUrl}"`, () => {});
+
+        console.log('Waiting for authentication in browser...');
+        console.log('\x1b[90m(Or paste your API Key or JWT token below if browser did not open)\x1b[0m\n');
+
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+
+        rl.question('API Key or Token: ', async (inputToken) => {
+          if (!authCompleted && inputToken.trim()) {
+            authCompleted = true;
+            server.close();
+            const token = inputToken.trim();
+            config.apiKey = token;
+            config.token = token;
+            saveConfig(config);
+
+            const populated = await hookManager.autoPopulateTokens({
+              token,
+              apiKey: token,
+              organizationId: config.organizationId,
+            });
+
+            console.log('\n\x1b[32m✔ Successfully authenticated!\x1b[0m');
+            console.log(`\x1b[32m✔ Credentials stored in ${CONFIG_FILE}\x1b[0m`);
+            if (populated.length > 0) {
+              console.log('\n\x1b[1m\x1b[36m⚡ Automatically Populated Agent Configurations:\x1b[0m');
+              populated.forEach((agent) => console.log(`   ✔ ${agent}`));
+            }
+            console.log('\nTokenTrail is ready.\n');
+            process.exit(0);
+          }
+          rl.close();
+        });
       });
       break;
     }
@@ -303,6 +492,7 @@ async function main() {
       console.log(`Central API:        \x1b[32m${config.apiUrl}\x1b[0m`);
       console.log(`Ingestion Endpoint: \x1b[32m${config.ingestUrl}\x1b[0m`);
       console.log(`Organization:       ${config.organizationId}`);
+      console.log(`Authenticated:      ${config.apiKey || config.token ? '\x1b[32m✔ Active\x1b[0m' : '\x1b[33mNo (Run `tokentrail login`)\x1b[0m'}`);
       console.log(`Connected Agents:   ${config.connectedAgents.length > 0 ? config.connectedAgents.join(', ') : 'None (run `tokentrail connect claude`)'}`);
       console.log(`Config File:        ${CONFIG_FILE}\n`);
       break;
@@ -323,6 +513,7 @@ async function main() {
       console.log(`Queue Database ............. ${path.join(CONFIG_DIR, 'collector.db')}`);
       console.log(`Claude Code Hook ........... ${fs.existsSync(path.join(os.homedir(), '.claude')) ? '\x1b[32m✔ Installed\x1b[0m' : 'Not installed'}`);
       console.log(`Copilot Hook ............... ${fs.existsSync(path.join(os.homedir(), '.config', 'github-copilot')) ? '\x1b[32m✔ Installed\x1b[0m' : 'Not installed'}`);
+      console.log(`Gemini/Antigravity MCP ..... ${fs.existsSync(path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')) ? '\x1b[32m✔ Configured\x1b[0m' : 'Not configured'}`);
       console.log('\n\x1b[32mDiagnostic Check Complete: System is ready.\x1b[0m\n');
       break;
     }
@@ -345,7 +536,7 @@ async function main() {
     default: {
       console.log('\n⚡ \x1b[1m\x1b[36mTokenTrail CLI\x1b[0m - AI Coding Agent Observability Platform\n');
       console.log('Usage:');
-      console.log('  tokentrail login             Authenticate developer credentials');
+      console.log('  tokentrail login             Authenticate developer credentials & auto-populate MCP');
       console.log('  tokentrail connect <agent>   Automatically install telemetry hooks for an agent');
       console.log('  tokentrail disconnect <agent>Safely remove hooks without touching user configs');
       console.log('  tokentrail status            Show connected agents and server endpoints');

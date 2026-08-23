@@ -16,17 +16,26 @@ export function Navbar({ range, onRangeChange, onRefresh, isRefreshing }: Navbar
   const [isAuthOpen, setIsAuthOpen] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem('agentmeter_user');
+    const stored = localStorage.getItem('agentmeter_user') || localStorage.getItem('tokentrail_user');
     if (stored) {
       try {
         setUser(JSON.parse(stored));
       } catch (e) {}
+    }
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('cli_callback') || params.get('callback')) {
+        setIsAuthOpen(true);
+      }
     }
   }, []);
 
   const handleLogout = () => {
     localStorage.removeItem('agentmeter_token');
     localStorage.removeItem('agentmeter_user');
+    localStorage.removeItem('tokentrail_token');
+    localStorage.removeItem('tokentrail_user');
     setUser(null);
   };
 

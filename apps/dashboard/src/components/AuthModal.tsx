@@ -19,6 +19,38 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Check if opened via CLI login loopback
+  const [cliCallback, setCliCallback] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const callback = params.get('cli_callback') || params.get('callback');
+      if (callback) {
+        setCliCallback(callback);
+      }
+    }
+  }, []);
+
+  const handleAuthSuccess = (profile: any, token: string) => {
+    localStorage.setItem('agentmeter_token', token);
+    localStorage.setItem('tokentrail_token', token);
+    localStorage.setItem('agentmeter_user', JSON.stringify(profile));
+    localStorage.setItem('tokentrail_user', JSON.stringify(profile));
+    onSuccess(profile, token);
+    onClose();
+
+    // If CLI requested authentication, redirect back to local loopback server
+    if (cliCallback) {
+      const redirectUrl = new URL(cliCallback);
+      redirectUrl.searchParams.set('token', token);
+      redirectUrl.searchParams.set('apiKey', token);
+      redirectUrl.searchParams.set('email', profile?.email || '');
+      redirectUrl.searchParams.set('organizationId', profile?.organizationId || 'org_default');
+      window.location.href = redirectUrl.toString();
+    }
+  };
+
   if (!isOpen) return null;
 
   const handleSsoLogin = async (provider: 'google' | 'github' | 'microsoft' | 'saml_sso') => {
@@ -35,10 +67,7 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
       });
       const data = await res.json();
       if (res.ok && data.token) {
-        localStorage.setItem('agentmeter_token', data.token);
-        localStorage.setItem('agentmeter_user', JSON.stringify(data.profile));
-        onSuccess(data.profile, data.token);
-        onClose();
+        handleAuthSuccess(data.profile, data.token);
       } else {
         setError(data.error || 'SSO Authentication failed');
       }
@@ -61,10 +90,7 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
       });
       const data = await res.json();
       if (res.ok && data.token) {
-        localStorage.setItem('agentmeter_token', data.token);
-        localStorage.setItem('agentmeter_user', JSON.stringify(data.profile));
-        onSuccess(data.profile, data.token);
-        onClose();
+        handleAuthSuccess(data.profile, data.token);
       } else {
         setError(data.error || 'Login failed');
       }
@@ -93,10 +119,7 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
       });
       const data = await res.json();
       if (res.ok && data.token) {
-        localStorage.setItem('agentmeter_token', data.token);
-        localStorage.setItem('agentmeter_user', JSON.stringify(data.profile));
-        onSuccess(data.profile, data.token);
-        onClose();
+        handleAuthSuccess(data.profile, data.token);
       } else {
         setError(data.error || 'Signup failed');
       }
@@ -134,6 +157,15 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
         {error && (
           <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-mono">
             {error}
+          </div>
+        )}
+
+        {cliCallback && (
+          <div className="p-3 rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-200 text-xs flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
+            <div>
+              <span className="font-semibold text-white">CLI Authentication:</span> Log in to link your terminal and auto-populate your MCP agent tokens.
+            </div>
           </div>
         )}
 
