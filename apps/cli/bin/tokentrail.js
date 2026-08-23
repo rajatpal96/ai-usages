@@ -257,7 +257,7 @@ class SafeHookManager {
     return true;
   }
 
-  async syncClaudeLogs(apiUrl, apiKey, orgId) {
+  async syncClaudeLogs(apiUrl, tokenOrKey, orgId) {
     const projectsDir = path.join(this.homeDir, '.claude', 'projects');
     if (!fs.existsSync(projectsDir)) {
       return { syncedEvents: 0, totalTokens: 0, sessions: 0 };
@@ -319,7 +319,7 @@ class SafeHookManager {
                 eventsToUpload.push({
                   eventId: `evt_${messageId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
                   timestamp: data.timestamp || new Date().toISOString(),
-                  organizationId: orgId || 'org_default',
+                  organizationId: orgId || 'EXT',
                   userId: 'developer',
                   projectId: projectName,
                   sessionId: data.sessionId || 'claude_session',
@@ -394,6 +394,7 @@ class SafeHookManager {
 
       // POST to backend API
       const ingestEndpoint = `${apiUrl}/v1/events/batch`;
+      const effectiveAuth = tokenOrKey || '';
       for (let i = 0; i < eventsToUpload.length; i += 50) {
         const batch = eventsToUpload.slice(i, i + 50);
         try {
@@ -401,7 +402,7 @@ class SafeHookManager {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+              ...(effectiveAuth ? { Authorization: `Bearer ${effectiveAuth}` } : {}),
             },
             body: JSON.stringify({ events: batch }),
           }).catch(() => null);
@@ -503,7 +504,7 @@ const hookManager = new SafeHookManager();
 if (command === '__daemon_worker') {
   const cfg = loadConfig();
   const triggerSync = () => {
-    hookManager.syncClaudeLogs(cfg.apiUrl, cfg.apiKey || cfg.token, cfg.organizationId).catch(() => null);
+    hookManager.syncClaudeLogs(cfg.apiUrl, cfg.token || cfg.apiKey, cfg.organizationId).catch(() => null);
   };
 
   // Instant trigger
@@ -714,7 +715,7 @@ async function main() {
       console.log('\n🔄 \x1b[1m\x1b[36mTokenTrail Transcript & Usage Sync\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
       console.log('Scanning local Claude Code sessions in ~/.claude/projects...');
-      const res = await hookManager.syncClaudeLogs(config.apiUrl, config.apiKey || config.token, config.organizationId);
+      const res = await hookManager.syncClaudeLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
       if (res.syncedEvents > 0) {
         console.log(`\n\x1b[32m✔ Successfully synchronized ${res.syncedEvents} new prompt events across ${res.sessions} sessions!\x1b[0m`);
         console.log(`\x1b[32m✔ Ingested ${res.totalTokens.toLocaleString()} tokens into TokenTrail.\x1b[0m`);
@@ -732,7 +733,7 @@ async function main() {
       console.log('\x1b[90m(Press Ctrl+C to stop)\x1b[0m\n');
 
       const poll = async () => {
-        const res = await hookManager.syncClaudeLogs(config.apiUrl, config.apiKey || config.token, config.organizationId);
+        const res = await hookManager.syncClaudeLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
         if (res.syncedEvents > 0) {
           console.log(`[\x1b[32m${new Date().toLocaleTimeString()}\x1b[0m] ⚡ Ingested \x1b[33m${res.syncedEvents} new events\x1b[0m (${res.totalTokens.toLocaleString()} tokens) from Claude Code`);
         }
@@ -745,7 +746,7 @@ async function main() {
 
     case 'status': {
       // Auto sync pending transcripts
-      const syncRes = await hookManager.syncClaudeLogs(config.apiUrl, config.apiKey || config.token, config.organizationId);
+      const syncRes = await hookManager.syncClaudeLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
 
       console.log('\n📊 \x1b[1m\x1b[36mTokenTrail Status\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
@@ -765,7 +766,7 @@ async function main() {
       console.log('\n🩺 \x1b[1m\x1b[36mTokenTrail Diagnostics & Doctor\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
 
-      const syncRes = await hookManager.syncClaudeLogs(config.apiUrl, config.apiKey || config.token, config.organizationId);
+      const syncRes = await hookManager.syncClaudeLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
 
       let apiOnline = false;
       try {
