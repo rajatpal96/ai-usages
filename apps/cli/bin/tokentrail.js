@@ -378,12 +378,11 @@ class SafeHookManager {
 
     const eventsToUpload = Array.from(eventsMap.values());
 
+    let successfullyUploadedEvents = 0;
+    let successfullyUploadedTokens = 0;
+
     if (eventsToUpload.length > 0) {
       ensureConfigDir();
-      for (const [turnId] of eventsMap.entries()) {
-        syncedIds[turnId] = true;
-      }
-      fs.writeFileSync(stateFile, JSON.stringify(syncedIds));
 
       // Buffer into local SQLite durability queue if present
       try {
@@ -414,23 +413,41 @@ class SafeHookManager {
 
       // POST to backend API
       const ingestEndpoint = `${apiUrl}/v1/events/batch`;
-      const effectiveAuth = tokenOrKey || '';
+      const effectiveAuth = (tokenOrKey || '').trim();
       for (let i = 0; i < eventsToUpload.length; i += 50) {
         const batch = eventsToUpload.slice(i, i + 50);
         try {
-          await fetch(ingestEndpoint, {
+          const resp = await fetch(ingestEndpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               ...(effectiveAuth ? { Authorization: `Bearer ${effectiveAuth}` } : {}),
             },
             body: JSON.stringify({ events: batch }),
-          }).catch(() => null);
-        } catch (e) {}
+          });
+
+          if (resp.ok) {
+            for (const evt of batch) {
+              const turnId = evt.metadata?.turnId;
+              if (turnId) syncedIds[turnId] = true;
+              successfullyUploadedEvents++;
+              successfullyUploadedTokens += (evt.usage?.totalTokens || 0);
+            }
+            fs.writeFileSync(stateFile, JSON.stringify(syncedIds));
+          } else if (resp.status === 401) {
+            console.error(`\x1b[31m⚠ TokenTrail Auth Error (401): Please run 'tokentrail login' to authenticate.\x1b[0m`);
+            break;
+          } else {
+            const errText = await resp.text().catch(() => '');
+            console.error(`\x1b[33m⚠ TokenTrail Upload Warning (${resp.status}): ${errText}\x1b[0m`);
+          }
+        } catch (e) {
+          console.error(`\x1b[33m⚠ TokenTrail Network Error: ${e.message}\x1b[0m`);
+        }
       }
     }
 
-    return { syncedEvents: eventsToUpload.length, totalTokens, sessions: sessionSet.size };
+    return { syncedEvents: successfullyUploadedEvents, totalTokens: successfullyUploadedTokens, sessions: sessionSet.size };
   }
 
   async syncAntigravityLogs(apiUrl, tokenOrKey, orgId) {
@@ -449,7 +466,6 @@ class SafeHookManager {
     }
 
     const eventsMap = new Map();
-    let totalTokens = 0;
     const sessionSet = new Set();
 
     for (const brainDir of brainDirs) {
@@ -512,7 +528,6 @@ class SafeHookManager {
                   const outputTokens = step.usage?.output_tokens || step.usage?.outputTokens || Math.max(120, Math.round(contentChars / 4));
                   const total = inputTokens + outputTokens;
 
-                  totalTokens += total;
                   sessionSet.add(convId);
 
                   eventsMap.set(turnId, {
@@ -560,12 +575,11 @@ class SafeHookManager {
     }
 
     const eventsToUpload = Array.from(eventsMap.values());
+    let successfullyUploadedEvents = 0;
+    let successfullyUploadedTokens = 0;
+
     if (eventsToUpload.length > 0) {
       ensureConfigDir();
-      for (const [turnId] of eventsMap.entries()) {
-        syncedIds[turnId] = true;
-      }
-      fs.writeFileSync(stateFile, JSON.stringify(syncedIds));
 
       try {
         const dbPath = path.join(CONFIG_DIR, 'collector.db');
@@ -594,23 +608,41 @@ class SafeHookManager {
       } catch (e) {}
 
       const ingestEndpoint = `${apiUrl}/v1/events/batch`;
-      const effectiveAuth = tokenOrKey || '';
+      const effectiveAuth = (tokenOrKey || '').trim();
       for (let i = 0; i < eventsToUpload.length; i += 50) {
         const batch = eventsToUpload.slice(i, i + 50);
         try {
-          await fetch(ingestEndpoint, {
+          const resp = await fetch(ingestEndpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               ...(effectiveAuth ? { Authorization: `Bearer ${effectiveAuth}` } : {}),
             },
             body: JSON.stringify({ events: batch }),
-          }).catch(() => null);
-        } catch (e) {}
+          });
+
+          if (resp.ok) {
+            for (const evt of batch) {
+              const turnId = evt.metadata?.turnId;
+              if (turnId) syncedIds[turnId] = true;
+              successfullyUploadedEvents++;
+              successfullyUploadedTokens += (evt.usage?.totalTokens || 0);
+            }
+            fs.writeFileSync(stateFile, JSON.stringify(syncedIds));
+          } else if (resp.status === 401) {
+            console.error(`\x1b[31m⚠ TokenTrail Auth Error (401): Please run 'tokentrail login' to authenticate.\x1b[0m`);
+            break;
+          } else {
+            const errText = await resp.text().catch(() => '');
+            console.error(`\x1b[33m⚠ TokenTrail Upload Warning (${resp.status}): ${errText}\x1b[0m`);
+          }
+        } catch (e) {
+          console.error(`\x1b[33m⚠ TokenTrail Network Error: ${e.message}\x1b[0m`);
+        }
       }
     }
 
-    return { syncedEvents: eventsToUpload.length, totalTokens, sessions: sessionSet.size };
+    return { syncedEvents: successfullyUploadedEvents, totalTokens: successfullyUploadedTokens, sessions: sessionSet.size };
   }
 
   async syncAllLogs(apiUrl, tokenOrKey, orgId) {

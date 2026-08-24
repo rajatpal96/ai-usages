@@ -219,30 +219,36 @@ function startBackgroundAgentWatcher() {
       if (!fs.existsSync(configDir)) {
         try { fs.mkdirSync(configDir, { recursive: true }); } catch (e) {}
       }
-      for (const [turnId] of eventsMap.entries()) {
-        if (turnId.startsWith('agy_')) {
-          agySyncedIds[turnId] = true;
-        } else {
-          claudeSyncedIds[turnId] = true;
-        }
-      }
-      try {
-        fs.writeFileSync(claudeStateFile, JSON.stringify(claudeSyncedIds));
-        fs.writeFileSync(agyStateFile, JSON.stringify(agySyncedIds));
-      } catch (e) {}
-
       const ingestEndpoint = `${INGEST_BASE_URL}/v1/events/batch`;
+      const authHeader = (MCP_ACCESS_TOKEN || API_KEY || '').trim();
       for (let i = 0; i < eventsToUpload.length; i += 50) {
         const batch = eventsToUpload.slice(i, i + 50);
         try {
-          await fetch(ingestEndpoint, {
+          const resp = await fetch(ingestEndpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              ...(API_KEY || MCP_ACCESS_TOKEN ? { Authorization: `Bearer ${API_KEY || MCP_ACCESS_TOKEN}` } : {}),
+              ...(authHeader ? { Authorization: `Bearer ${authHeader}` } : {}),
             },
             body: JSON.stringify({ events: batch }),
-          }).catch(() => null);
+          });
+
+          if (resp.ok) {
+            for (const evt of batch) {
+              const turnId = evt.metadata?.turnId;
+              if (turnId) {
+                if (turnId.startsWith('agy_')) {
+                  agySyncedIds[turnId] = true;
+                } else {
+                  claudeSyncedIds[turnId] = true;
+                }
+              }
+            }
+            try {
+              fs.writeFileSync(claudeStateFile, JSON.stringify(claudeSyncedIds));
+              fs.writeFileSync(agyStateFile, JSON.stringify(agySyncedIds));
+            } catch (e) {}
+          }
         } catch (e) {}
       }
     }
