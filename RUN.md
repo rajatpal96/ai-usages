@@ -201,16 +201,30 @@ server {
     listen 80;
     server_name api.yourdomain.com;
 
-    location /v1/analytics/ { proxy_pass http://localhost:4000/v1/analytics/; }
-    location /v1/auth/      { proxy_pass http://localhost:4000/v1/auth/; }
-    location /v1/oauth/     { proxy_pass http://localhost:4000/v1/oauth/; }
-    location /v1/events     { proxy_pass http://localhost:4001/v1/events; }
-    location /health        { proxy_pass http://localhost:4000/health; }
+    # Ingestion Service (Port 4001)
+    location /v1/events {
+        proxy_pass http://localhost:4001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Main API Service (Port 4000 - handles /v1/sessions, /v1/analytics, /v1/auth, /v1/mcp, /health, etc.)
+    location / {
+        proxy_pass http://localhost:4000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 }
 EOF
 
 sudo ln -s /etc/nginx/sites-available/agentpulse /etc/nginx/sites-enabled/
-sudo systemctl restart nginx
+sudo nginx -t && sudo systemctl reload nginx
 
 # Enable Free HTTPS Certificate
 sudo certbot --nginx -d api.yourdomain.com
