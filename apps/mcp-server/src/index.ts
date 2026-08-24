@@ -8,10 +8,19 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import { createScopedLogger } from '../../../packages/logger/src/index.js';
-import { formatCurrency, formatNumber } from '../../../packages/common/src/index.js';
+const log = {
+  info: (data: any, msg?: string) => console.error(`[TokenTrail MCP:INFO] ${msg || ''}`, data),
+  warn: (data: any, msg?: string) => console.error(`[TokenTrail MCP:WARN] ${msg || ''}`, data),
+  error: (data: any, msg?: string) => console.error(`[TokenTrail MCP:ERROR] ${msg || ''}`, data),
+};
 
-const log = createScopedLogger('mcp-server');
+function formatCurrency(amount: number, currency = 'USD'): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
+}
+
+function formatNumber(num: number): string {
+  return new Intl.NumberFormat('en-US').format(num);
+}
 
 // Centralized TokenTrail API Endpoint (Defaults to central backend)
 const API_BASE_URL = process.env.TOKENTRAIL_API_URL || process.env.AGENTMETER_API_URL || process.env.API_BASE_URL || 'https://api.tokentrail.xyz';
