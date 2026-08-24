@@ -432,6 +432,198 @@ class SafeHookManager {
 
     return { syncedEvents: eventsToUpload.length, totalTokens, sessions: sessionSet.size };
   }
+
+  async syncAntigravityLogs(apiUrl, tokenOrKey, orgId) {
+    const brainDirs = [
+      path.join(this.homeDir, '.gemini', 'antigravity-ide', 'brain'),
+      path.join(this.homeDir, '.gemini', 'brain'),
+      path.join(this.homeDir, '.antigravity', 'brain'),
+    ];
+
+    const stateFile = path.join(CONFIG_DIR, 'antigravity_synced.json');
+    let syncedIds = {};
+    if (fs.existsSync(stateFile)) {
+      try {
+        syncedIds = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+      } catch (e) {}
+    }
+
+    const eventsMap = new Map();
+    let totalTokens = 0;
+    const sessionSet = new Set();
+
+    for (const brainDir of brainDirs) {
+      if (!fs.existsSync(brainDir)) continue;
+      try {
+        const convDirs = fs.readdirSync(brainDir, { withFileTypes: true });
+        for (const conv of convDirs) {
+          if (!conv.isDirectory()) continue;
+          const convId = conv.name;
+          const transcriptFile = path.join(brainDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+          if (!fs.existsSync(transcriptFile)) continue;
+
+          try {
+            const rawContent = fs.readFileSync(transcriptFile, 'utf-8');
+            const lines = rawContent.split('\n').filter(Boolean);
+            let inferredProject = 'default';
+            let activeModel = 'gemini-2.5-pro';
+
+            for (const line of lines) {
+              try {
+                const step = JSON.parse(line);
+                if (step.content && typeof step.content === 'string') {
+                  if (step.content.includes('Model Selection') || step.content.includes('Gemini')) {
+                    const match = step.content.match(/Gemini\s+([0-9\.\w\-]+)/i);
+                    if (match) activeModel = `gemini-${match[1].toLowerCase()}`;
+                  }
+                  if (step.content.includes('/Users/')) {
+                    const match = step.content.match(/\/Users\/[^\/]+\/([^\/\n]+)/);
+                    if (match && match[1] && !['.gemini', '.npm', '.nvm', 'Downloads', 'Documents', 'Desktop'].includes(match[1])) {
+                      inferredProject = match[1];
+                    }
+                  }
+                }
+              } catch (e) {}
+            }
+
+            for (const line of lines) {
+              try {
+                const step = JSON.parse(line);
+                if (step.source === 'MODEL' || step.type === 'PLANNER_RESPONSE') {
+                  const stepIndex = step.step_index !== undefined ? step.step_index : Math.random().toString(36).substring(7);
+                  const turnId = `agy_${convId}_${stepIndex}`;
+                  if (syncedIds[turnId]) continue;
+
+                  const toolsUsed = [];
+                  if (Array.isArray(step.tool_calls)) {
+                    for (const tc of step.tool_calls) {
+                      if (tc.name) toolsUsed.push(tc.name);
+                    }
+                  }
+
+                  let thinkingText = step.thinking || '';
+                  if (!thinkingText && step.content && typeof step.content === 'string') {
+                    thinkingText = step.content.slice(0, 200);
+                  }
+
+                  const promptChars = step.prompt_length || 3500;
+                  const contentChars = (step.content ? step.content.length : 0) + (JSON.stringify(step.tool_calls || {}).length);
+                  const inputTokens = step.usage?.input_tokens || step.usage?.inputTokens || Math.max(800, Math.round(promptChars / 4));
+                  const outputTokens = step.usage?.output_tokens || step.usage?.outputTokens || Math.max(120, Math.round(contentChars / 4));
+                  const total = inputTokens + outputTokens;
+
+                  totalTokens += total;
+                  sessionSet.add(convId);
+
+                  eventsMap.set(turnId, {
+                    eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
+                    timestamp: step.created_at || new Date().toISOString(),
+                    organizationId: orgId || 'EXT',
+                    userId: 'developer',
+                    projectId: inferredProject,
+                    sessionId: convId,
+                    agent: {
+                      id: 'gemini-antigravity',
+                      name: 'gemini-antigravity',
+                      version: '2.5.x',
+                      type: 'autonomous_pair_programmer',
+                    },
+                    provider: {
+                      name: 'google',
+                    },
+                    model: {
+                      name: activeModel,
+                    },
+                    usage: {
+                      inputTokens,
+                      outputTokens,
+                      cacheReadTokens: 0,
+                      cacheWriteTokens: 0,
+                      totalTokens: total,
+                    },
+                    metadata: {
+                      stepIndex: step.step_index,
+                      tools: toolsUsed,
+                      toolCount: toolsUsed.length,
+                      status: step.status || 'DONE',
+                      thinkingSnippet: thinkingText ? thinkingText.slice(0, 200) : undefined,
+                      turnId,
+                    },
+                    status: 'success',
+                  });
+                }
+              } catch (e) {}
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
+
+    const eventsToUpload = Array.from(eventsMap.values());
+    if (eventsToUpload.length > 0) {
+      ensureConfigDir();
+      for (const [turnId] of eventsMap.entries()) {
+        syncedIds[turnId] = true;
+      }
+      fs.writeFileSync(stateFile, JSON.stringify(syncedIds));
+
+      try {
+        const dbPath = path.join(CONFIG_DIR, 'collector.db');
+        const db = new Database(dbPath);
+        db.pragma('journal_mode = WAL');
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS events (
+            eventId TEXT PRIMARY KEY,
+            organizationId TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            retryCount INTEGER NOT NULL DEFAULT 0,
+            errorMessage TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL
+          );
+        `);
+        const insert = db.prepare(`
+          INSERT OR IGNORE INTO events (eventId, organizationId, payload, status, retryCount, createdAt, updatedAt)
+          VALUES (?, ?, ?, 'pending', 0, ?, ?)
+        `);
+        const now = new Date().toISOString();
+        for (const evt of eventsToUpload) {
+          insert.run(evt.eventId, evt.organizationId, JSON.stringify(evt), now, now);
+        }
+      } catch (e) {}
+
+      const ingestEndpoint = `${apiUrl}/v1/events/batch`;
+      const effectiveAuth = tokenOrKey || '';
+      for (let i = 0; i < eventsToUpload.length; i += 50) {
+        const batch = eventsToUpload.slice(i, i + 50);
+        try {
+          await fetch(ingestEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(effectiveAuth ? { Authorization: `Bearer ${effectiveAuth}` } : {}),
+            },
+            body: JSON.stringify({ events: batch }),
+          }).catch(() => null);
+        } catch (e) {}
+      }
+    }
+
+    return { syncedEvents: eventsToUpload.length, totalTokens, sessions: sessionSet.size };
+  }
+
+  async syncAllLogs(apiUrl, tokenOrKey, orgId) {
+    const claudeRes = await this.syncClaudeLogs(apiUrl, tokenOrKey, orgId);
+    const agyRes = await this.syncAntigravityLogs(apiUrl, tokenOrKey, orgId);
+    return {
+      syncedEvents: claudeRes.syncedEvents + agyRes.syncedEvents,
+      totalTokens: claudeRes.totalTokens + agyRes.totalTokens,
+      sessions: claudeRes.sessions + agyRes.sessions,
+      claude: claudeRes,
+      antigravity: agyRes,
+    };
+  }
 }
 
 function ensureConfigDir() {
@@ -734,13 +926,19 @@ async function main() {
     case 'sync': {
       console.log('\n🔄 \x1b[1m\x1b[36mTokenTrail Transcript & Usage Sync\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
-      console.log('Scanning local Claude Code sessions in ~/.claude/projects...');
-      const res = await hookManager.syncClaudeLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
+      console.log('Scanning Claude Code (~/.claude/projects) and Gemini/Antigravity (~/.gemini)...');
+      const res = await hookManager.syncAllLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
       if (res.syncedEvents > 0) {
         console.log(`\n\x1b[32m✔ Successfully synchronized ${res.syncedEvents} new prompt events across ${res.sessions} sessions!\x1b[0m`);
-        console.log(`\x1b[32m✔ Ingested ${res.totalTokens.toLocaleString()} tokens into TokenTrail.\x1b[0m`);
+        if (res.antigravity && res.antigravity.syncedEvents > 0) {
+          console.log(`  • Gemini / Antigravity: ${res.antigravity.syncedEvents} events (${res.antigravity.totalTokens.toLocaleString()} tokens)`);
+        }
+        if (res.claude && res.claude.syncedEvents > 0) {
+          console.log(`  • Claude Code:          ${res.claude.syncedEvents} events (${res.claude.totalTokens.toLocaleString()} tokens)`);
+        }
+        console.log(`\x1b[32m✔ Ingested ${res.totalTokens.toLocaleString()} total tokens into TokenTrail.\x1b[0m`);
       } else {
-        console.log(`\n\x1b[32m✔ All local Claude Code sessions are up to date.\x1b[0m`);
+        console.log(`\n\x1b[32m✔ All local Claude Code and Gemini/Antigravity sessions are up to date.\x1b[0m`);
       }
       console.log(`Dashboard: \x1b[34mhttps://www.tokentrail.xyz\x1b[0m\n`);
       break;
@@ -749,13 +947,13 @@ async function main() {
     case 'watch': {
       console.log('\n👀 \x1b[1m\x1b[36mTokenTrail Live Real-Time Agent Watcher\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
-      console.log('Listening for live prompt completions and transcript changes in background...');
+      console.log('Listening for live prompt completions and transcript changes across Claude Code & Antigravity...');
       console.log('\x1b[90m(Press Ctrl+C to stop)\x1b[0m\n');
 
       const poll = async () => {
-        const res = await hookManager.syncClaudeLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
+        const res = await hookManager.syncAllLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
         if (res.syncedEvents > 0) {
-          console.log(`[\x1b[32m${new Date().toLocaleTimeString()}\x1b[0m] ⚡ Ingested \x1b[33m${res.syncedEvents} new events\x1b[0m (${res.totalTokens.toLocaleString()} tokens) from Claude Code`);
+          console.log(`[\x1b[32m${new Date().toLocaleTimeString()}\x1b[0m] ⚡ Ingested \x1b[33m${res.syncedEvents} new events\x1b[0m (${res.totalTokens.toLocaleString()} tokens)`);
         }
       };
 
@@ -766,7 +964,7 @@ async function main() {
 
     case 'status': {
       // Auto sync pending transcripts
-      const syncRes = await hookManager.syncClaudeLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
+      const syncRes = await hookManager.syncAllLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
 
       console.log('\n📊 \x1b[1m\x1b[36mTokenTrail Status\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
@@ -786,7 +984,7 @@ async function main() {
       console.log('\n🩺 \x1b[1m\x1b[36mTokenTrail Diagnostics & Doctor\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
 
-      const syncRes = await hookManager.syncClaudeLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
+      const syncRes = await hookManager.syncAllLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
 
       let apiOnline = false;
       try {

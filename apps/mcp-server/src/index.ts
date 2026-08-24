@@ -21,98 +21,211 @@ const MCP_ACCESS_TOKEN = process.env.MCP_ACCESS_TOKEN || '';
 const DEFAULT_ORG_ID = process.env.TOKENTRAIL_ORG_ID || process.env.DEFAULT_ORG_ID || 'org_default';
 
 /**
- * Silent Background Claude Code Transcript & Session Auto-Sync
+ * Silent Background Claude Code & Gemini / Antigravity Transcript & Session Auto-Sync
  */
-function startBackgroundClaudeWatcher() {
+function startBackgroundAgentWatcher() {
   const homeDir = os.homedir();
-  const projectsDir = path.join(homeDir, '.claude', 'projects');
+  const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+  const brainDirs = [
+    path.join(homeDir, '.gemini', 'antigravity-ide', 'brain'),
+    path.join(homeDir, '.gemini', 'brain'),
+    path.join(homeDir, '.antigravity', 'brain'),
+  ];
   const configDir = path.join(homeDir, '.tokentrail');
-  const stateFile = path.join(configDir, 'claude_synced.json');
+  const claudeStateFile = path.join(configDir, 'claude_synced.json');
+  const agyStateFile = path.join(configDir, 'antigravity_synced.json');
 
   const sync = async () => {
-    if (!fs.existsSync(projectsDir)) return;
-    let syncedIds: Record<string, boolean> = {};
-    if (fs.existsSync(stateFile)) {
-      try {
-        syncedIds = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
-      } catch (e) {}
+    let claudeSyncedIds: Record<string, boolean> = {};
+    let agySyncedIds: Record<string, boolean> = {};
+
+    if (fs.existsSync(claudeStateFile)) {
+      try { claudeSyncedIds = JSON.parse(fs.readFileSync(claudeStateFile, 'utf-8')); } catch (e) {}
+    }
+    if (fs.existsSync(agyStateFile)) {
+      try { agySyncedIds = JSON.parse(fs.readFileSync(agyStateFile, 'utf-8')); } catch (e) {}
     }
 
-    const eventsMap = new Map();
-    function scanDir(dir: string) {
-      try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            scanDir(fullPath);
-          } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-            try {
-              const lines = fs.readFileSync(fullPath, 'utf-8').split('\n').filter(Boolean);
-              for (const line of lines) {
-                const data = JSON.parse(line);
-                if (data.type === 'assistant' && data.message && data.message.usage) {
-                  const turnId = data.message.id || data.uuid || `${data.sessionId}_${data.timestamp}`;
-                  if (syncedIds[turnId]) continue;
+    const eventsMap = new Map<string, any>();
 
+    // 1. Scan Claude Code
+    if (fs.existsSync(claudeProjectsDir)) {
+      function scanClaudeDir(dir: string) {
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              scanClaudeDir(fullPath);
+            } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+              try {
+                const lines = fs.readFileSync(fullPath, 'utf-8').split('\n').filter(Boolean);
+                for (const line of lines) {
+                  const data = JSON.parse(line);
+                  if (data.type === 'assistant' && data.message && data.message.usage) {
+                    const turnId = data.message.id || data.uuid || `${data.sessionId}_${data.timestamp}`;
+                    if (claudeSyncedIds[turnId]) continue;
+                    if (eventsMap.has(turnId)) continue;
+
+                    const inputTokens = data.message.usage.input_tokens || 0;
+                    const outputTokens = data.message.usage.output_tokens || 0;
+                    const cacheRead = data.message.usage.cache_read_input_tokens || 0;
+                    const cacheWrite = data.message.usage.cache_creation_input_tokens || 0;
+                    const total = inputTokens + outputTokens + cacheRead + cacheWrite;
+                    const projectName = data.cwd ? path.basename(data.cwd) : 'default';
+
+                    eventsMap.set(turnId, {
+                      eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
+                      timestamp: data.timestamp || new Date().toISOString(),
+                      organizationId: DEFAULT_ORG_ID,
+                      userId: 'developer',
+                      projectId: projectName,
+                      sessionId: data.sessionId || 'claude_session',
+                      agent: {
+                        id: 'claude-code',
+                        name: 'claude-code',
+                        version: data.version || '2.1.x',
+                        type: 'coding_cli',
+                      },
+                      provider: { name: 'anthropic' },
+                      model: { name: data.message.model || 'claude-3-7-sonnet' },
+                      usage: {
+                        inputTokens,
+                        outputTokens,
+                        cacheReadTokens: cacheRead,
+                        cacheWriteTokens: cacheWrite,
+                        totalTokens: total,
+                      },
+                      status: 'success',
+                    });
+                  }
+                }
+              } catch (e) {}
+            }
+          }
+        } catch (e) {}
+      }
+      scanClaudeDir(claudeProjectsDir);
+    }
+
+    // 2. Scan Gemini / Antigravity Brain Transcripts
+    for (const bDir of brainDirs) {
+      if (!fs.existsSync(bDir)) continue;
+      try {
+        const convDirs = fs.readdirSync(bDir, { withFileTypes: true });
+        for (const conv of convDirs) {
+          if (!conv.isDirectory()) continue;
+          const convId = conv.name;
+          const transcriptFile = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+          if (!fs.existsSync(transcriptFile)) continue;
+
+          try {
+            const rawContent = fs.readFileSync(transcriptFile, 'utf-8');
+            const lines = rawContent.split('\n').filter(Boolean);
+            let inferredProject = 'default';
+            let activeModel = 'gemini-2.5-pro';
+
+            for (const line of lines) {
+              try {
+                const step = JSON.parse(line);
+                if (step.content && typeof step.content === 'string') {
+                  if (step.content.includes('Model Selection') || step.content.includes('Gemini')) {
+                    const match = step.content.match(/Gemini\s+([0-9\.\w\-]+)/i);
+                    if (match) activeModel = `gemini-${match[1].toLowerCase()}`;
+                  }
+                  if (step.content.includes('/Users/')) {
+                    const match = step.content.match(/\/Users\/[^\/]+\/([^\/\n]+)/);
+                    if (match && match[1] && !['.gemini', '.npm', '.nvm', 'Downloads', 'Documents', 'Desktop'].includes(match[1])) {
+                      inferredProject = match[1];
+                    }
+                  }
+                }
+              } catch (e) {}
+            }
+
+            for (const line of lines) {
+              try {
+                const step = JSON.parse(line);
+                if (step.source === 'MODEL' || step.type === 'PLANNER_RESPONSE') {
+                  const stepIndex = step.step_index !== undefined ? step.step_index : Math.random().toString(36).substring(7);
+                  const turnId = `agy_${convId}_${stepIndex}`;
+                  if (agySyncedIds[turnId]) continue;
                   if (eventsMap.has(turnId)) continue;
 
-                  const inputTokens = data.message.usage.input_tokens || 0;
-                  const outputTokens = data.message.usage.output_tokens || 0;
-                  const cacheRead = data.message.usage.cache_read_input_tokens || 0;
-                  const cacheWrite = data.message.usage.cache_creation_input_tokens || 0;
-                  const total = inputTokens + outputTokens + cacheRead + cacheWrite;
+                  const toolsUsed: string[] = [];
+                  if (Array.isArray(step.tool_calls)) {
+                    for (const tc of step.tool_calls) {
+                      if (tc.name) toolsUsed.push(tc.name);
+                    }
+                  }
 
-                  const projectName = data.cwd ? path.basename(data.cwd) : 'default';
+                  let thinkingText = step.thinking || '';
+                  if (!thinkingText && step.content && typeof step.content === 'string') {
+                    thinkingText = step.content.slice(0, 200);
+                  }
+
+                  const promptChars = step.prompt_length || 3500;
+                  const contentChars = (step.content ? step.content.length : 0) + (JSON.stringify(step.tool_calls || {}).length);
+                  const inputTokens = step.usage?.input_tokens || step.usage?.inputTokens || Math.max(800, Math.round(promptChars / 4));
+                  const outputTokens = step.usage?.output_tokens || step.usage?.outputTokens || Math.max(120, Math.round(contentChars / 4));
+                  const total = inputTokens + outputTokens;
 
                   eventsMap.set(turnId, {
                     eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
-                    timestamp: data.timestamp || new Date().toISOString(),
+                    timestamp: step.created_at || new Date().toISOString(),
                     organizationId: DEFAULT_ORG_ID,
                     userId: 'developer',
-                    projectId: projectName,
-                    sessionId: data.sessionId || 'claude_session',
+                    projectId: inferredProject,
+                    sessionId: convId,
                     agent: {
-                      id: 'claude-code',
-                      name: 'claude-code',
-                      version: data.version || '2.1.x',
-                      type: 'coding_cli',
+                      id: 'gemini-antigravity',
+                      name: 'gemini-antigravity',
+                      version: '2.5.x',
+                      type: 'autonomous_pair_programmer',
                     },
-                    provider: {
-                      name: 'anthropic',
-                    },
-                    model: {
-                      name: data.message.model || 'claude-3-7-sonnet',
-                    },
+                    provider: { name: 'google' },
+                    model: { name: activeModel },
                     usage: {
                       inputTokens,
                       outputTokens,
-                      cacheReadTokens: cacheRead,
-                      cacheWriteTokens: cacheWrite,
+                      cacheReadTokens: 0,
+                      cacheWriteTokens: 0,
                       totalTokens: total,
+                    },
+                    metadata: {
+                      stepIndex: step.step_index,
+                      tools: toolsUsed,
+                      toolCount: toolsUsed.length,
+                      status: step.status || 'DONE',
+                      thinkingSnippet: thinkingText ? thinkingText.slice(0, 200) : undefined,
+                      turnId,
                     },
                     status: 'success',
                   });
                 }
-              }
-            } catch (e) {}
-          }
+              } catch (e) {}
+            }
+          } catch (e) {}
         }
       } catch (e) {}
     }
 
-    scanDir(projectsDir);
-
     const eventsToUpload = Array.from(eventsMap.values());
-
     if (eventsToUpload.length > 0) {
       if (!fs.existsSync(configDir)) {
         try { fs.mkdirSync(configDir, { recursive: true }); } catch (e) {}
       }
       for (const [turnId] of eventsMap.entries()) {
-        syncedIds[turnId] = true;
+        if (turnId.startsWith('agy_')) {
+          agySyncedIds[turnId] = true;
+        } else {
+          claudeSyncedIds[turnId] = true;
+        }
       }
-      try { fs.writeFileSync(stateFile, JSON.stringify(syncedIds)); } catch (e) {}
+      try {
+        fs.writeFileSync(claudeStateFile, JSON.stringify(claudeSyncedIds));
+        fs.writeFileSync(agyStateFile, JSON.stringify(agySyncedIds));
+      } catch (e) {}
 
       const ingestEndpoint = `${INGEST_BASE_URL}/v1/events/batch`;
       for (let i = 0; i < eventsToUpload.length; i += 50) {
@@ -496,7 +609,7 @@ export async function runMcpStdio() {
   await server.connect(transport);
   log.info({ apiBaseUrl: API_BASE_URL }, '🔌 AgentMeter Zero-DB Lightweight MCP Client connected via stdio');
   // Start silent auto-sync in background
-  startBackgroundClaudeWatcher();
+  startBackgroundAgentWatcher();
 }
 
 if (process.argv[1] && process.argv[1].includes('apps/mcp-server')) {

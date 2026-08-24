@@ -266,4 +266,314 @@ export class SafeHookManager {
     }
     return true;
   }
+
+  /**
+   * 7. Sync Claude Code Logs
+   */
+  public async syncClaudeLogs(apiUrl: string, tokenOrKey?: string, orgId?: string) {
+    const projectsDir = path.join(this.homeDir, '.claude', 'projects');
+    if (!fs.existsSync(projectsDir)) {
+      return { syncedEvents: 0, totalTokens: 0, sessions: 0 };
+    }
+
+    const configDir = path.join(this.homeDir, '.tokentrail');
+    const stateFile = path.join(configDir, 'claude_synced.json');
+    let syncedIds: Record<string, boolean> = {};
+    if (fs.existsSync(stateFile)) {
+      try {
+        syncedIds = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+      } catch (e) {}
+    }
+
+    const eventsMap = new Map<string, any>();
+    let totalTokens = 0;
+    const sessionSet = new Set<string>();
+
+    const scanDir = (dir: string) => {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          scanDir(fullPath);
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+          try {
+            const lines = fs.readFileSync(fullPath, 'utf-8').split('\n').filter(Boolean);
+            for (const line of lines) {
+              const data = JSON.parse(line);
+              if (data.type === 'assistant' && data.message && data.message.usage) {
+                const turnId = data.message.id || data.uuid || `${data.sessionId}_${data.timestamp}`;
+                if (syncedIds[turnId]) continue;
+
+                const toolsUsed: string[] = [];
+                let thinkingText = '';
+                if (Array.isArray(data.message.content)) {
+                  for (const block of data.message.content) {
+                    if (block.type === 'tool_use' && block.name) {
+                      toolsUsed.push(block.name);
+                    }
+                    if (block.type === 'thinking' && block.thinking) {
+                      thinkingText = block.thinking.slice(0, 200);
+                    }
+                  }
+                }
+
+                if (eventsMap.has(turnId)) continue;
+
+                const inputTokens = data.message.usage.input_tokens || 0;
+                const outputTokens = data.message.usage.output_tokens || 0;
+                const cacheRead = data.message.usage.cache_read_input_tokens || 0;
+                const cacheWrite = data.message.usage.cache_creation_input_tokens || 0;
+                const total = inputTokens + outputTokens + cacheRead + cacheWrite;
+
+                totalTokens += total;
+                if (data.sessionId) sessionSet.add(data.sessionId);
+
+                const projectName = data.cwd ? path.basename(data.cwd) : 'default';
+
+                eventsMap.set(turnId, {
+                  eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
+                  timestamp: data.timestamp || new Date().toISOString(),
+                  organizationId: orgId || 'EXT',
+                  userId: 'developer',
+                  projectId: projectName,
+                  sessionId: data.sessionId || 'claude_session',
+                  agent: {
+                    id: 'claude-code',
+                    name: 'claude-code',
+                    version: data.version || '2.1.x',
+                    type: 'coding_cli',
+                  },
+                  provider: {
+                    name: 'anthropic',
+                  },
+                  model: {
+                    name: data.message.model || 'claude-3-7-sonnet',
+                  },
+                  usage: {
+                    inputTokens,
+                    outputTokens,
+                    cacheReadTokens: cacheRead,
+                    cacheWriteTokens: cacheWrite,
+                    totalTokens: total,
+                  },
+                  metadata: {
+                    cwd: data.cwd,
+                    projectName,
+                    tools: toolsUsed,
+                    toolCount: toolsUsed.length,
+                    stopReason: data.message.stop_reason,
+                    thinkingSnippet: thinkingText || undefined,
+                    turnId,
+                  },
+                  status: 'success',
+                });
+              }
+            }
+          } catch (e) {}
+        }
+      }
+    };
+
+    scanDir(projectsDir);
+
+    const eventsToUpload = Array.from(eventsMap.values());
+    if (eventsToUpload.length > 0) {
+      if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+      for (const [turnId] of eventsMap.entries()) {
+        syncedIds[turnId] = true;
+      }
+      fs.writeFileSync(stateFile, JSON.stringify(syncedIds));
+
+      const ingestEndpoint = `${apiUrl}/v1/events/batch`;
+      const effectiveAuth = tokenOrKey || '';
+      for (let i = 0; i < eventsToUpload.length; i += 50) {
+        const batch = eventsToUpload.slice(i, i + 50);
+        try {
+          await fetch(ingestEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(effectiveAuth ? { Authorization: `Bearer ${effectiveAuth}` } : {}),
+            },
+            body: JSON.stringify({ events: batch }),
+          }).catch(() => null);
+        } catch (e) {}
+      }
+    }
+
+    return { syncedEvents: eventsToUpload.length, totalTokens, sessions: sessionSet.size };
+  }
+
+  /**
+   * 8. Sync Gemini / Antigravity Transcripts
+   */
+  public async syncAntigravityLogs(apiUrl: string, tokenOrKey?: string, orgId?: string) {
+    const brainDirs = [
+      path.join(this.homeDir, '.gemini', 'antigravity-ide', 'brain'),
+      path.join(this.homeDir, '.gemini', 'brain'),
+      path.join(this.homeDir, '.antigravity', 'brain'),
+    ];
+
+    const configDir = path.join(this.homeDir, '.tokentrail');
+    const stateFile = path.join(configDir, 'antigravity_synced.json');
+    let syncedIds: Record<string, boolean> = {};
+    if (fs.existsSync(stateFile)) {
+      try {
+        syncedIds = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+      } catch (e) {}
+    }
+
+    const eventsMap = new Map<string, any>();
+    let totalTokens = 0;
+    const sessionSet = new Set<string>();
+
+    for (const brainDir of brainDirs) {
+      if (!fs.existsSync(brainDir)) continue;
+      try {
+        const convDirs = fs.readdirSync(brainDir, { withFileTypes: true });
+        for (const conv of convDirs) {
+          if (!conv.isDirectory()) continue;
+          const convId = conv.name;
+          const transcriptFile = path.join(brainDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+          if (!fs.existsSync(transcriptFile)) continue;
+
+          try {
+            const rawContent = fs.readFileSync(transcriptFile, 'utf-8');
+            const lines = rawContent.split('\n').filter(Boolean);
+            let inferredProject = 'default';
+            let activeModel = 'gemini-2.5-pro';
+
+            for (const line of lines) {
+              try {
+                const step = JSON.parse(line);
+                if (step.content && typeof step.content === 'string') {
+                  if (step.content.includes('Model Selection') || step.content.includes('Gemini')) {
+                    const match = step.content.match(/Gemini\s+([0-9\.\w\-]+)/i);
+                    if (match) activeModel = `gemini-${match[1].toLowerCase()}`;
+                  }
+                  if (step.content.includes('/Users/')) {
+                    const match = step.content.match(/\/Users\/[^\/]+\/([^\/\n]+)/);
+                    if (match && match[1] && !['.gemini', '.npm', '.nvm', 'Downloads', 'Documents', 'Desktop'].includes(match[1])) {
+                      inferredProject = match[1];
+                    }
+                  }
+                }
+              } catch (e) {}
+            }
+
+            for (const line of lines) {
+              try {
+                const step = JSON.parse(line);
+                if (step.source === 'MODEL' || step.type === 'PLANNER_RESPONSE') {
+                  const stepIndex = step.step_index !== undefined ? step.step_index : Math.random().toString(36).substring(7);
+                  const turnId = `agy_${convId}_${stepIndex}`;
+                  if (syncedIds[turnId]) continue;
+
+                  const toolsUsed: string[] = [];
+                  if (Array.isArray(step.tool_calls)) {
+                    for (const tc of step.tool_calls) {
+                      if (tc.name) toolsUsed.push(tc.name);
+                    }
+                  }
+
+                  let thinkingText = step.thinking || '';
+                  if (!thinkingText && step.content && typeof step.content === 'string') {
+                    thinkingText = step.content.slice(0, 200);
+                  }
+
+                  const promptChars = step.prompt_length || 3500;
+                  const contentChars = (step.content ? step.content.length : 0) + (JSON.stringify(step.tool_calls || {}).length);
+                  const inputTokens = step.usage?.input_tokens || step.usage?.inputTokens || Math.max(800, Math.round(promptChars / 4));
+                  const outputTokens = step.usage?.output_tokens || step.usage?.outputTokens || Math.max(120, Math.round(contentChars / 4));
+                  const total = inputTokens + outputTokens;
+
+                  totalTokens += total;
+                  sessionSet.add(convId);
+
+                  eventsMap.set(turnId, {
+                    eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
+                    timestamp: step.created_at || new Date().toISOString(),
+                    organizationId: orgId || 'EXT',
+                    userId: 'developer',
+                    projectId: inferredProject,
+                    sessionId: convId,
+                    agent: {
+                      id: 'gemini-antigravity',
+                      name: 'gemini-antigravity',
+                      version: '2.5.x',
+                      type: 'autonomous_pair_programmer',
+                    },
+                    provider: {
+                      name: 'google',
+                    },
+                    model: {
+                      name: activeModel,
+                    },
+                    usage: {
+                      inputTokens,
+                      outputTokens,
+                      cacheReadTokens: 0,
+                      cacheWriteTokens: 0,
+                      totalTokens: total,
+                    },
+                    metadata: {
+                      stepIndex: step.step_index,
+                      tools: toolsUsed,
+                      toolCount: toolsUsed.length,
+                      status: step.status || 'DONE',
+                      thinkingSnippet: thinkingText ? thinkingText.slice(0, 200) : undefined,
+                      turnId,
+                    },
+                    status: 'success',
+                  });
+                }
+              } catch (e) {}
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
+
+    const eventsToUpload = Array.from(eventsMap.values());
+    if (eventsToUpload.length > 0) {
+      if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+      for (const [turnId] of eventsMap.entries()) {
+        syncedIds[turnId] = true;
+      }
+      fs.writeFileSync(stateFile, JSON.stringify(syncedIds));
+
+      const ingestEndpoint = `${apiUrl}/v1/events/batch`;
+      const effectiveAuth = tokenOrKey || '';
+      for (let i = 0; i < eventsToUpload.length; i += 50) {
+        const batch = eventsToUpload.slice(i, i + 50);
+        try {
+          await fetch(ingestEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(effectiveAuth ? { Authorization: `Bearer ${effectiveAuth}` } : {}),
+            },
+            body: JSON.stringify({ events: batch }),
+          }).catch(() => null);
+        } catch (e) {}
+      }
+    }
+
+    return { syncedEvents: eventsToUpload.length, totalTokens, sessions: sessionSet.size };
+  }
+
+  /**
+   * 9. Unified Sync for all AI Coding Agents
+   */
+  public async syncAllLogs(apiUrl: string, tokenOrKey?: string, orgId?: string) {
+    const claudeRes = await this.syncClaudeLogs(apiUrl, tokenOrKey, orgId);
+    const agyRes = await this.syncAntigravityLogs(apiUrl, tokenOrKey, orgId);
+    return {
+      syncedEvents: claudeRes.syncedEvents + agyRes.syncedEvents,
+      totalTokens: claudeRes.totalTokens + agyRes.totalTokens,
+      sessions: claudeRes.sessions + agyRes.sessions,
+      claude: claudeRes,
+      antigravity: agyRes,
+    };
+  }
 }
