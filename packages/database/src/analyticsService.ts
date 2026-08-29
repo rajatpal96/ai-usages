@@ -361,6 +361,13 @@ export class AnalyticsService {
             _id: '$sessionId',
             agentName: { $last: '$agent.name' },
             model: { $last: '$model.name' },
+            projectId: { $last: '$projectId' },
+            sessionGoal: { $first: '$sessionGoal' },
+            userPrompt: { $first: '$userPrompt' },
+            actionSummary: { $last: '$actionSummary' },
+            firstMetadataPrompt: { $first: '$metadata.userPrompt' },
+            firstMetadataGoal: { $first: '$metadata.sessionGoal' },
+            lastMetadataAction: { $last: '$metadata.actionSummary' },
             totalTokens: { $sum: '$usage.totalTokens' },
             totalCostUsd: { $sum: '$cost.total' },
             startTime: { $min: '$timestamp' },
@@ -377,6 +384,10 @@ export class AnalyticsService {
         sessionId: s._id,
         agentName: s.agentName || 'claude-code',
         model: s.model,
+        projectId: s.projectId,
+        sessionGoal: s.sessionGoal || s.firstMetadataGoal || s.userPrompt || s.firstMetadataPrompt,
+        userPrompt: s.userPrompt || s.firstMetadataPrompt,
+        actionSummary: s.actionSummary || s.lastMetadataAction,
         totalTokens: s.totalTokens,
         totalCostUsd: Number(s.totalCostUsd.toFixed(4)),
         startTime: s.startTime,
@@ -404,22 +415,29 @@ export class AnalyticsService {
       .sort({ timestamp: 1 })
       .lean();
 
-    if (!session && events.length > 0) {
+    if (events.length > 0) {
       const first = events[0];
       const last = events[events.length - 1];
       const totalTokens = events.reduce((acc, e) => acc + (e.usage?.totalTokens || 0), 0);
       const totalCostUsd = events.reduce((acc, e) => acc + (e.cost?.total || 0), 0);
+      const resolvedGoal = session?.sessionGoal || session?.initialPrompt || first.sessionGoal || first.userPrompt || (first.metadata as any)?.sessionGoal || (first.metadata as any)?.userPrompt;
 
       session = {
+        ...(session || {}),
         sessionId,
         organizationId,
-        agentName: first.agent?.name || 'claude-code',
-        model: first.model?.name,
-        totalTokens,
-        totalCostUsd: Number(totalCostUsd.toFixed(4)),
-        startTime: first.timestamp,
-        lastEventTime: last.timestamp,
-        durationMs: Math.max(1000, new Date(last.timestamp).getTime() - new Date(first.timestamp).getTime()),
+        agentName: session?.agentName || first.agent?.name || 'claude-code',
+        model: session?.metadata?.model || first.model?.name,
+        projectId: session?.projectId || first.projectId,
+        sessionGoal: resolvedGoal,
+        initialPrompt: resolvedGoal,
+        lastPrompt: last.userPrompt || (last.metadata as any)?.userPrompt,
+        summary: session?.summary || last.actionSummary || (last.metadata as any)?.actionSummary,
+        totalTokens: session?.totalTokens || totalTokens,
+        totalCostUsd: Number((session?.totalCostUsd || totalCostUsd).toFixed(4)),
+        startTime: session?.startTime || first.timestamp,
+        lastEventTime: session?.endTime || last.timestamp,
+        durationMs: session?.durationMs || Math.max(1000, new Date(last.timestamp).getTime() - new Date(first.timestamp).getTime()),
         eventCount: events.length,
       } as any;
     }

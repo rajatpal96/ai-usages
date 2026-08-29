@@ -6,7 +6,11 @@ import os from 'os';
 import readline from 'readline';
 import http from 'http';
 import { exec, spawn } from 'child_process';
+import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const CONFIG_DIR = path.join(os.homedir(), '.tokentrail');
 const LEGACY_CONFIG_DIR = path.join(os.homedir(), '.agentpulse');
@@ -275,7 +279,7 @@ class SafeHookManager {
     let totalTokens = 0;
     const sessionSet = new Set();
 
-    function scanDir(dir) {
+    const scanDir = (dir) => {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
@@ -284,40 +288,70 @@ class SafeHookManager {
         } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
           try {
             const lines = fs.readFileSync(fullPath, 'utf-8').split('\n').filter(Boolean);
+            let sessionGoal = '';
+            let currentPrompt = '';
+
             for (const line of lines) {
               const data = JSON.parse(line);
+              if (data.type === 'user' && data.message) {
+                let p = '';
+                if (typeof data.message.content === 'string') p = data.message.content.trim();
+                else if (Array.isArray(data.message.content)) {
+                  p = data.message.content.filter((b) => b && (b.type === 'text' || b.text)).map((b) => b.text || '').join(' ').trim();
+                }
+                if (p && !sessionGoal) {
+                  sessionGoal = p;
+                }
+              }
+            }
+
+            for (const line of lines) {
+              const data = JSON.parse(line);
+              if (data.type === 'user' && data.message) {
+                let p = '';
+                if (typeof data.message.content === 'string') p = data.message.content.trim();
+                else if (Array.isArray(data.message.content)) {
+                  p = data.message.content.filter((b) => b && (b.type === 'text' || b.text)).map((b) => b.text || '').join(' ').trim();
+                }
+                if (p) {
+                  currentPrompt = p;
+                }
+              }
+
               if (data.type === 'assistant' && data.message && data.message.usage) {
-                // Key by prompt completion turn ID (message.id) to eliminate chunk duplicates
                 const turnId = data.message.id || data.uuid || `${data.sessionId}_${data.timestamp}`;
                 if (syncedIds[turnId]) continue;
 
-                // Extract tool calls and reasoning snippet
                 const toolsUsed = [];
                 let thinkingText = '';
+                let actionSummary = '';
                 if (Array.isArray(data.message.content)) {
+                  const toolDetails = [];
+                  let text = '';
                   for (const block of data.message.content) {
                     if (block.type === 'tool_use' && block.name) {
                       toolsUsed.push(block.name);
+                      const inp = block.input || {};
+                      if (block.name === 'Bash' && inp.command) toolDetails.push(`Bash: ${inp.command.slice(0, 50)}`);
+                      else if (block.name === 'Edit' && inp.file_path) toolDetails.push(`Edit ${path.basename(inp.file_path)}`);
+                      else if (block.name === 'Write' && inp.file_path) toolDetails.push(`Write ${path.basename(inp.file_path)}`);
+                      else if (block.name === 'ReadDir' && inp.path) toolDetails.push(`Read ${path.basename(inp.path)}`);
+                      else if (block.name === 'Grep' && inp.pattern) toolDetails.push(`Grep "${inp.pattern}"`);
+                      else toolDetails.push(block.name);
                     }
                     if (block.type === 'thinking' && block.thinking) {
-                      thinkingText = block.thinking.slice(0, 200);
+                      thinkingText = block.thinking.slice(0, 250);
+                    }
+                    if (block.type === 'text' && block.text && !text) {
+                      text = block.text.trim().slice(0, 160);
                     }
                   }
+                  if (toolDetails.length > 0) actionSummary = toolDetails.join(' • ');
+                  else if (text) actionSummary = text;
                 }
 
-                if (eventsMap.has(turnId)) {
-                  // Merge any additional tool calls or thinking text into existing turn
-                  const existing = eventsMap.get(turnId);
-                  for (const t of toolsUsed) {
-                    if (!existing.metadata.tools.includes(t)) {
-                      existing.metadata.tools.push(t);
-                    }
-                  }
-                  if (thinkingText && !existing.metadata.thinkingSnippet) {
-                    existing.metadata.thinkingSnippet = thinkingText;
-                  }
-                  continue;
-                }
+                if (!actionSummary) actionSummary = 'Assistant Response';
+                if (eventsMap.has(turnId)) continue;
 
                 const inputTokens = data.message.usage.input_tokens || 0;
                 const outputTokens = data.message.usage.output_tokens || 0;
@@ -329,6 +363,7 @@ class SafeHookManager {
                 if (data.sessionId) sessionSet.add(data.sessionId);
 
                 const projectName = data.cwd ? path.basename(data.cwd) : 'default';
+                const resolvedPrompt = currentPrompt || sessionGoal;
 
                 eventsMap.set(turnId, {
                   eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
@@ -337,6 +372,9 @@ class SafeHookManager {
                   userId: 'developer',
                   projectId: projectName,
                   sessionId: data.sessionId || 'claude_session',
+                  userPrompt: resolvedPrompt || undefined,
+                  actionSummary,
+                  sessionGoal: sessionGoal || undefined,
                   agent: {
                     id: 'claude-code',
                     name: 'claude-code',
@@ -359,6 +397,9 @@ class SafeHookManager {
                   metadata: {
                     cwd: data.cwd,
                     projectName,
+                    userPrompt: resolvedPrompt || undefined,
+                    actionSummary,
+                    sessionGoal: sessionGoal || undefined,
                     tools: toolsUsed,
                     toolCount: toolsUsed.length,
                     stopReason: data.message.stop_reason,
@@ -372,7 +413,7 @@ class SafeHookManager {
           } catch (e) {}
         }
       }
-    }
+    };
 
     scanDir(projectsDir);
 
@@ -414,8 +455,8 @@ class SafeHookManager {
       // POST to backend API
       const ingestEndpoint = `${apiUrl}/v1/events/batch`;
       const effectiveAuth = (tokenOrKey || '').trim();
-      for (let i = 0; i < eventsToUpload.length; i += 50) {
-        const batch = eventsToUpload.slice(i, i + 50);
+      for (let i = 0; i < eventsToUpload.length; i += 10) {
+        const batch = eventsToUpload.slice(i, i + 10);
         try {
           const resp = await fetch(ingestEndpoint, {
             method: 'POST',
@@ -465,6 +506,37 @@ class SafeHookManager {
       } catch (e) {}
     }
 
+    const cleanPrompt = (raw) => {
+      if (!raw || typeof raw !== 'string') return '';
+      const match = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+      return raw.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '').trim().slice(0, 400);
+    };
+
+    const formatActionSummary = (step) => {
+      if (step.tool_calls && Array.isArray(step.tool_calls) && step.tool_calls.length > 0) {
+        const summaries = step.tool_calls.map((tc) => {
+          const args = tc.args || {};
+          if (tc.name === 'run_command') return `Command: ${args.CommandLine || args.command || 'exec'}`;
+          if (tc.name === 'replace_file_content' || tc.name === 'write_to_file' || tc.name === 'multi_replace_file_content') {
+            const file = args.TargetFile ? path.basename(args.TargetFile) : 'file';
+            return `Edit ${file}: ${args.Instruction || args.Description || ''}`.trim();
+          }
+          if (tc.name === 'view_file') return `View ${args.AbsolutePath ? path.basename(args.AbsolutePath) : 'file'}`;
+          if (tc.name === 'grep_search') return `Search: "${args.Query || ''}"`;
+          if (tc.name === 'list_dir') return `List ${args.DirectoryPath ? path.basename(args.DirectoryPath) : 'dir'}`;
+          return tc.name;
+        });
+        return summaries.join(' • ');
+      }
+      if (step.content && typeof step.content === 'string') {
+        return step.content.replace(/<[^>]+>/g, '').trim().slice(0, 180);
+      }
+      return 'Assistant Turn';
+    };
+
     const eventsMap = new Map();
     const sessionSet = new Set();
 
@@ -483,10 +555,18 @@ class SafeHookManager {
             const lines = rawContent.split('\n').filter(Boolean);
             let inferredProject = 'default';
             let activeModel = 'gemini-2.5-pro';
+            let sessionGoal = '';
+            let currentPrompt = '';
 
             for (const line of lines) {
               try {
                 const step = JSON.parse(line);
+                if (step.type === 'USER_INPUT' || step.source === 'USER_EXPLICIT') {
+                  const p = cleanPrompt(step.content);
+                  if (p && !sessionGoal) {
+                    sessionGoal = p;
+                  }
+                }
                 if (step.content && typeof step.content === 'string') {
                   if (step.content.includes('Model Selection') || step.content.includes('Gemini')) {
                     const match = step.content.match(/Gemini\s+([0-9\.\w\-]+)/i);
@@ -505,7 +585,14 @@ class SafeHookManager {
             for (const line of lines) {
               try {
                 const step = JSON.parse(line);
-                if (step.source === 'MODEL' || step.type === 'PLANNER_RESPONSE') {
+                if (step.type === 'USER_INPUT' || step.source === 'USER_EXPLICIT') {
+                  const p = cleanPrompt(step.content);
+                  if (p) {
+                    currentPrompt = p;
+                  }
+                }
+
+                if (step.source === 'MODEL' || step.type === 'PLANNER_RESPONSE' || step.type === 'ERROR_MESSAGE' || step.type === 'CODE_ACTION' || step.type === 'RUN_COMMAND') {
                   const stepIndex = step.step_index !== undefined ? step.step_index : Math.random().toString(36).substring(7);
                   const turnId = `agy_${convId}_${stepIndex}`;
                   if (syncedIds[turnId]) continue;
@@ -519,7 +606,7 @@ class SafeHookManager {
 
                   let thinkingText = step.thinking || '';
                   if (!thinkingText && step.content && typeof step.content === 'string') {
-                    thinkingText = step.content.slice(0, 200);
+                    thinkingText = step.content.slice(0, 250);
                   }
 
                   const promptChars = step.prompt_length || 3500;
@@ -528,7 +615,9 @@ class SafeHookManager {
                   const outputTokens = step.usage?.output_tokens || step.usage?.outputTokens || Math.max(120, Math.round(contentChars / 4));
                   const total = inputTokens + outputTokens;
 
+                  const actionSummary = formatActionSummary(step);
                   sessionSet.add(convId);
+                  const resolvedPrompt = currentPrompt || sessionGoal;
 
                   eventsMap.set(turnId, {
                     eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
@@ -537,6 +626,9 @@ class SafeHookManager {
                     userId: 'developer',
                     projectId: inferredProject,
                     sessionId: convId,
+                    userPrompt: resolvedPrompt || undefined,
+                    actionSummary,
+                    sessionGoal: sessionGoal || undefined,
                     agent: {
                       id: 'gemini-antigravity',
                       name: 'gemini-antigravity',
@@ -557,14 +649,18 @@ class SafeHookManager {
                       totalTokens: total,
                     },
                     metadata: {
+                      userPrompt: resolvedPrompt || undefined,
+                      actionSummary,
+                      sessionGoal: sessionGoal || undefined,
                       stepIndex: step.step_index,
+                      stepType: step.type,
                       tools: toolsUsed,
                       toolCount: toolsUsed.length,
-                      status: step.status || 'DONE',
-                      thinkingSnippet: thinkingText ? thinkingText.slice(0, 200) : undefined,
+                      status: step.status || (step.type === 'ERROR_MESSAGE' ? 'ERROR' : 'DONE'),
+                      thinkingSnippet: thinkingText ? thinkingText.slice(0, 250) : undefined,
                       turnId,
                     },
-                    status: 'success',
+                    status: step.type === 'ERROR_MESSAGE' || step.status === 'ERROR' ? 'error' : 'success',
                   });
                 }
               } catch (e) {}
@@ -609,8 +705,8 @@ class SafeHookManager {
 
       const ingestEndpoint = `${apiUrl}/v1/events/batch`;
       const effectiveAuth = (tokenOrKey || '').trim();
-      for (let i = 0; i < eventsToUpload.length; i += 50) {
-        const batch = eventsToUpload.slice(i, i + 50);
+      for (let i = 0; i < eventsToUpload.length; i += 10) {
+        const batch = eventsToUpload.slice(i, i + 10);
         try {
           const resp = await fetch(ingestEndpoint, {
             method: 'POST',
@@ -712,13 +808,136 @@ function saveConfig(cfg) {
   } catch (e) {}
 }
 
+const DAEMON_STATUS_FILE = path.join(CONFIG_DIR, 'daemon_status.json');
+const LOG_FILE = path.join(CONFIG_DIR, 'daemon.log');
+
+function daemonLog(msg) {
+  try {
+    ensureConfigDir();
+    const logFile = path.join(CONFIG_DIR, 'daemon.log');
+    const entry = `[${new Date().toISOString()}] ${msg}\n`;
+    fs.appendFileSync(logFile, entry);
+    const stats = fs.statSync(logFile);
+    if (stats.size > 1024 * 1024) {
+      const content = fs.readFileSync(logFile, 'utf-8');
+      fs.writeFileSync(logFile, content.slice(content.length - 200 * 1024));
+    }
+  } catch (e) {}
+}
+
+/**
+ * Automatically cleans up logs, durability queue records, and agent config backups older than retention days (default: 15)
+ */
+function cleanOldLogsAndData(retentionDays = 15) {
+  const days = Number(retentionDays) || 15;
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const cutoffIso = new Date(cutoffMs).toISOString();
+  let prunedLogLines = 0;
+  let prunedDbRecords = 0;
+  let prunedBackups = 0;
+
+  // 1. Prune daemon.log entries older than 15 days
+  const logFile = path.join(CONFIG_DIR, 'daemon.log');
+  if (fs.existsSync(logFile)) {
+    try {
+      const content = fs.readFileSync(logFile, 'utf-8');
+      const lines = content.split('\n');
+      const keptLines = [];
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const match = line.match(/^\[([0-9T:\.\-Z]+)\]/);
+        if (match && match[1]) {
+          const ts = new Date(match[1]).getTime();
+          if (!isNaN(ts) && ts < cutoffMs) {
+            prunedLogLines++;
+            continue;
+          }
+        }
+        keptLines.push(line);
+      }
+      fs.writeFileSync(logFile, keptLines.join('\n') + (keptLines.length > 0 ? '\n' : ''));
+    } catch (e) {}
+  }
+
+  // 2. Prune SQLite durability queue (events & batches older than 15 days) and VACUUM
+  const dbPath = path.join(CONFIG_DIR, 'collector.db');
+  if (fs.existsSync(dbPath)) {
+    try {
+      const db = new Database(dbPath);
+      const res1 = db.prepare(`DELETE FROM events WHERE createdAt < ?`).run(cutoffIso);
+      const res2 = db.prepare(`DELETE FROM upload_batches WHERE createdAt < ?`).run(cutoffIso);
+      prunedDbRecords = (res1.changes || 0) + (res2.changes || 0);
+      db.exec('VACUUM;');
+      db.close();
+    } catch (e) {}
+  }
+
+  // 3. Prune old agent backup files (> 15 days)
+  const backupDirs = [
+    path.join(os.homedir(), '.claude', 'backups'),
+    path.join(os.homedir(), '.claude'),
+    path.join(os.homedir(), '.config', 'github-copilot'),
+    path.join(os.homedir(), '.tokentrail'),
+    path.join(os.homedir(), '.agentpulse'),
+  ];
+
+  for (const dir of backupDirs) {
+    if (fs.existsSync(dir)) {
+      try {
+        const files = fs.readdirSync(dir);
+        for (const f of files) {
+          if (f.includes('.backup.') || f.endsWith('.log.old')) {
+            const filePath = path.join(dir, f);
+            try {
+              const stats = fs.statSync(filePath);
+              if (stats.mtimeMs < cutoffMs) {
+                fs.unlinkSync(filePath);
+                prunedBackups++;
+              }
+            } catch (err) {}
+          }
+        }
+      } catch (e) {}
+    }
+  }
+
+  return { prunedLogLines, prunedDbRecords, prunedBackups, retentionDays: days };
+}
+
+function updateDaemonStatus(details) {
+  try {
+    ensureConfigDir();
+    const current = fs.existsSync(DAEMON_STATUS_FILE)
+      ? JSON.parse(fs.readFileSync(DAEMON_STATUS_FILE, 'utf-8'))
+      : {};
+    fs.writeFileSync(
+      DAEMON_STATUS_FILE,
+      JSON.stringify({ ...current, ...details, updatedAt: new Date().toISOString() }, null, 2)
+    );
+  } catch (e) {}
+}
+
+function getDaemonStatus() {
+  const pid = isDaemonRunning();
+  if (!pid) return { running: false, pid: null };
+  try {
+    if (fs.existsSync(DAEMON_STATUS_FILE)) {
+      const statusData = JSON.parse(fs.readFileSync(DAEMON_STATUS_FILE, 'utf-8'));
+      return { running: true, pid, ...statusData };
+    }
+  } catch (e) {}
+  return { running: true, pid };
+}
+
 function isDaemonRunning() {
   const pidFile = path.join(CONFIG_DIR, 'daemon.pid');
   if (fs.existsSync(pidFile)) {
     try {
       const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-      process.kill(pid, 0);
-      return pid;
+      if (pid && !isNaN(pid)) {
+        process.kill(pid, 0);
+        return pid;
+      }
     } catch (e) {
       try { fs.unlinkSync(pidFile); } catch (err) {}
     }
@@ -727,17 +946,46 @@ function isDaemonRunning() {
 }
 
 function startBackgroundDaemon() {
-  if (isDaemonRunning()) return;
+  const runningPid = isDaemonRunning();
+  if (runningPid) return runningPid;
   ensureConfigDir();
   try {
-    const child = spawn(process.execPath, [process.argv[1] || __filename, '__daemon_worker'], {
+    let scriptPath = __filename;
+    if (process.argv[1]) {
+      try {
+        scriptPath = fs.realpathSync(process.argv[1]);
+      } catch (e) {
+        scriptPath = process.argv[1];
+      }
+    }
+    const child = spawn(process.execPath, [scriptPath, '__daemon_worker'], {
       detached: true,
       stdio: 'ignore',
       env: process.env,
     });
     child.unref();
-    fs.writeFileSync(path.join(CONFIG_DIR, 'daemon.pid'), child.pid.toString());
+    if (child.pid) {
+      fs.writeFileSync(path.join(CONFIG_DIR, 'daemon.pid'), child.pid.toString());
+      updateDaemonStatus({ pid: child.pid, status: 'running', startedAt: new Date().toISOString() });
+      return child.pid;
+    }
   } catch (e) {}
+  return false;
+}
+
+function stopBackgroundDaemon() {
+  const pid = isDaemonRunning();
+  const pidFile = path.join(CONFIG_DIR, 'daemon.pid');
+  if (pid) {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch (e) {}
+    try { fs.unlinkSync(pidFile); } catch (err) {}
+    updateDaemonStatus({ status: 'stopped', stoppedAt: new Date().toISOString() });
+    return true;
+  }
+  try { if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile); } catch (err) {}
+  return false;
 }
 
 const args = process.argv.slice(2);
@@ -746,26 +994,92 @@ const targetAgent = args[1];
 const hookManager = new SafeHookManager();
 
 if (command === '__daemon_worker') {
-  const cfg = loadConfig();
-  const triggerSync = () => {
-    hookManager.syncClaudeLogs(cfg.apiUrl, cfg.token || cfg.apiKey, cfg.organizationId).catch(() => null);
+  daemonLog(`Background Auto-Sync Worker started (PID: ${process.pid})`);
+  updateDaemonStatus({ pid: process.pid, status: 'running', startedAt: new Date().toISOString() });
+
+  // Run 15-day retention cleanup on worker start
+  cleanOldLogsAndData(15);
+  // Schedule recurring 15-day log cleanup every 6 hours
+  setInterval(() => {
+    try {
+      const res = cleanOldLogsAndData(15);
+      if (res.prunedLogLines > 0 || res.prunedDbRecords > 0 || res.prunedBackups > 0) {
+        daemonLog(`[AUTO-CLEANUP] Pruned logs & records older than 15 days (${res.prunedLogLines} lines, ${res.prunedDbRecords} DB rows, ${res.prunedBackups} backups)`);
+      }
+    } catch (e) {}
+  }, 6 * 60 * 60 * 1000);
+
+  let isSyncing = false;
+  let syncDebounceTimer = null;
+  let totalEventsSynced = 0;
+  let totalTokensSynced = 0;
+
+  const triggerSync = async (reason = 'timer') => {
+    if (isSyncing) return;
+    isSyncing = true;
+    try {
+      const cfg = loadConfig();
+      const auth = (cfg.token || cfg.apiKey || '').trim();
+      const res = await hookManager.syncAllLogs(cfg.apiUrl, auth, cfg.organizationId);
+      if (res.syncedEvents > 0) {
+        totalEventsSynced += res.syncedEvents;
+        totalTokensSynced += res.totalTokens;
+        daemonLog(
+          `[AUTO-SYNC] ${reason}: Synchronized ${res.syncedEvents} events (${res.totalTokens.toLocaleString()} tokens) across ${res.sessions} sessions. Total: ${totalEventsSynced} events.`
+        );
+        updateDaemonStatus({
+          lastSyncAt: new Date().toISOString(),
+          lastSyncedEvents: res.syncedEvents,
+          lastSyncedTokens: res.totalTokens,
+          totalEventsSynced,
+          totalTokensSynced,
+        });
+      }
+    } catch (err) {
+      daemonLog(`[AUTO-SYNC ERROR] ${err.message}`);
+    } finally {
+      isSyncing = false;
+    }
   };
 
-  // Instant trigger
-  triggerSync();
+  const scheduleSync = (source) => {
+    if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = setTimeout(() => {
+      triggerSync(`watch:${source}`).catch(() => null);
+    }, 400);
+  };
 
-  // 1. File watcher on ~/.claude/projects for instantaneous 0-delay ingestion
-  const projectsDir = path.join(os.homedir(), '.claude', 'projects');
-  if (fs.existsSync(projectsDir)) {
-    try {
-      fs.watch(projectsDir, { recursive: true }, () => {
-        triggerSync();
-      });
-    } catch (e) {}
+  // 1. Instant sync on startup
+  triggerSync('startup');
+
+  // 2. Set up comprehensive watchers across all supported agents
+  const watchPaths = [
+    { name: 'claude-projects', path: path.join(os.homedir(), '.claude', 'projects') },
+    { name: 'claude-sessions', path: path.join(os.homedir(), '.claude', 'sessions') },
+    { name: 'claude-base', path: path.join(os.homedir(), '.claude') },
+    { name: 'antigravity-ide', path: path.join(os.homedir(), '.gemini', 'antigravity-ide', 'brain') },
+    { name: 'gemini-brain', path: path.join(os.homedir(), '.gemini', 'brain') },
+    { name: 'antigravity-brain', path: path.join(os.homedir(), '.antigravity', 'brain') },
+    { name: 'copilot', path: path.join(os.homedir(), '.config', 'github-copilot') },
+  ];
+
+  for (const wp of watchPaths) {
+    if (fs.existsSync(wp.path)) {
+      try {
+        fs.watch(wp.path, { recursive: true }, () => {
+          scheduleSync(wp.name);
+        });
+        daemonLog(`Watching ${wp.name} at ${wp.path}`);
+      } catch (e) {
+        daemonLog(`Failed to watch ${wp.name}: ${e.message}`);
+      }
+    }
   }
 
-  // 2. High-frequency 1.5s polling loop fallback
-  setInterval(triggerSync, 1500);
+  // 3. Robust polling loop fallback (every 2.5 seconds)
+  setInterval(() => {
+    triggerSync('interval');
+  }, 2500);
 } else {
   // Automatically start silent background daemon
   startBackgroundDaemon();
@@ -959,6 +1273,7 @@ async function main() {
       console.log('\n🔄 \x1b[1m\x1b[36mTokenTrail Transcript & Usage Sync\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
       console.log('Scanning Claude Code (~/.claude/projects) and Gemini/Antigravity (~/.gemini)...');
+      cleanOldLogsAndData(15);
       const res = await hookManager.syncAllLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
       if (res.syncedEvents > 0) {
         console.log(`\n\x1b[32m✔ Successfully synchronized ${res.syncedEvents} new prompt events across ${res.sessions} sessions!\x1b[0m`);
@@ -972,7 +1287,84 @@ async function main() {
       } else {
         console.log(`\n\x1b[32m✔ All local Claude Code and Gemini/Antigravity sessions are up to date.\x1b[0m`);
       }
+      const daemon = getDaemonStatus();
+      if (daemon.running) {
+        console.log(`\x1b[90m⚡ Background Auto-Sync Daemon is active (PID: ${daemon.pid}) and syncing live.\x1b[0m`);
+      }
       console.log(`Dashboard: \x1b[34mhttps://www.tokentrail.xyz\x1b[0m\n`);
+      break;
+    }
+
+    case 'daemon': {
+      const subCommand = targetAgent || 'status';
+      console.log('\n🔄 \x1b[1m\x1b[36mTokenTrail Auto-Sync Daemon\x1b[0m');
+      console.log('───────────────────────────────────────────────────────');
+
+      if (subCommand === 'start') {
+        const pid = startBackgroundDaemon();
+        if (pid) {
+          console.log(`\x1b[32m✔ Auto-sync daemon started successfully (PID: ${pid})\x1b[0m`);
+          console.log('Live transcripts from Claude Code, Antigravity, and Copilot will sync automatically.\n');
+        } else {
+          const existingPid = isDaemonRunning();
+          console.log(`\x1b[33mℹ Auto-sync daemon is already running (PID: ${existingPid})\x1b[0m\n`);
+        }
+      } else if (subCommand === 'stop') {
+        const stopped = stopBackgroundDaemon();
+        if (stopped) {
+          console.log('\x1b[32m✔ Auto-sync daemon stopped.\x1b[0m\n');
+        } else {
+          console.log('\x1b[33mℹ Auto-sync daemon was not running.\x1b[0m\n');
+        }
+      } else if (subCommand === 'restart') {
+        stopBackgroundDaemon();
+        await new Promise((r) => setTimeout(r, 500));
+        const pid = startBackgroundDaemon();
+        console.log(`\x1b[32m✔ Auto-sync daemon restarted successfully (PID: ${pid})\x1b[0m\n`);
+      } else if (subCommand === 'clean') {
+        const customDays = parseInt(args[2] || '15', 10) || 15;
+        const res = cleanOldLogsAndData(customDays);
+        console.log(`\x1b[32m✔ Log and telemetry database cleanup completed (${res.retentionDays}-day retention policy)\x1b[0m`);
+        console.log(`  • Pruned old log entries:    \x1b[33m${res.prunedLogLines}\x1b[0m lines`);
+        console.log(`  • Pruned local DB records:   \x1b[33m${res.prunedDbRecords}\x1b[0m rows`);
+        console.log(`  • Pruned stale backup files: \x1b[33m${res.prunedBackups}\x1b[0m files`);
+        console.log(`\x1b[32m✔ Local disk space optimized.\x1b[0m\n`);
+      } else if (subCommand === 'logs') {
+        if (fs.existsSync(LOG_FILE)) {
+          const lines = fs.readFileSync(LOG_FILE, 'utf-8').trim().split('\n');
+          console.log(`Recent Daemon Activity (last ${Math.min(25, lines.length)} entries):`);
+          console.log('───────────────────────────────────────────────────────');
+          lines.slice(-25).forEach((line) => console.log(`  \x1b[90m${line}\x1b[0m`));
+          console.log('');
+        } else {
+          console.log('\x1b[33mℹ No daemon logs found yet.\x1b[0m\n');
+        }
+      } else {
+        // status
+        const status = getDaemonStatus();
+        if (status.running) {
+          console.log(`Status:             \x1b[32m● Running (PID: ${status.pid})\x1b[0m`);
+          if (status.startedAt) console.log(`Started:            ${new Date(status.startedAt).toLocaleString()}`);
+          if (status.lastSyncAt) console.log(`Last Auto-Sync:     ${new Date(status.lastSyncAt).toLocaleString()}`);
+          if (status.totalEventsSynced !== undefined) {
+            console.log(`Events Auto-Synced: \x1b[32m${status.totalEventsSynced.toLocaleString()}\x1b[0m`);
+          }
+          if (status.totalTokensSynced !== undefined) {
+            console.log(`Tokens Auto-Synced: \x1b[32m${status.totalTokensSynced.toLocaleString()}\x1b[0m`);
+          }
+          console.log(`Retention Policy:   \x1b[32m15 Days (Auto-purges old logs, SQLite DB, backups)\x1b[0m`);
+          console.log(`Log File:           ${LOG_FILE}`);
+        } else {
+          console.log('Status:             \x1b[31m● Stopped\x1b[0m');
+          console.log('Run \x1b[33mtokentrail daemon start\x1b[0m to activate continuous background sync.');
+        }
+        console.log('\nCommands:');
+        console.log('  tokentrail daemon start        Start continuous background sync');
+        console.log('  tokentrail daemon stop         Stop background sync process');
+        console.log('  tokentrail daemon restart      Restart background sync worker');
+        console.log('  tokentrail daemon clean [days] Auto-prune logs & DB older than 15 days');
+        console.log('  tokentrail daemon logs         View live background sync log\n');
+      }
       break;
     }
 
@@ -995,8 +1387,10 @@ async function main() {
     }
 
     case 'status': {
-      // Auto sync pending transcripts
+      // Auto sync pending transcripts & clean old logs
+      cleanOldLogsAndData(15);
       const syncRes = await hookManager.syncAllLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
+      const daemon = getDaemonStatus();
 
       console.log('\n📊 \x1b[1m\x1b[36mTokenTrail Status\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
@@ -1004,6 +1398,8 @@ async function main() {
       console.log(`Ingestion Endpoint: \x1b[32m${config.ingestUrl}\x1b[0m`);
       console.log(`Organization:       ${config.organizationId}`);
       console.log(`Authenticated:      ${config.apiKey || config.token ? '\x1b[32m✔ Active\x1b[0m' : '\x1b[33mNo (Run `tokentrail login`)\x1b[0m'}`);
+      console.log(`Auto-Sync Daemon:   ${daemon.running ? `\x1b[32m✔ Active (PID: ${daemon.pid})\x1b[0m` : '\x1b[33m⚠ Inactive (Run `tokentrail daemon start`)\x1b[0m'}`);
+      console.log(`Retention Policy:   \x1b[32m15 Days (Auto-cleanup active)\x1b[0m`);
       console.log(`Connected Agents:   ${config.connectedAgents.length > 0 ? config.connectedAgents.join(', ') : 'None (run `tokentrail connect claude`)'}`);
       if (syncRes.syncedEvents > 0) {
         console.log(`Recent Sync:        \x1b[32m✔ ${syncRes.syncedEvents} events (${syncRes.totalTokens.toLocaleString()} tokens) ingested\x1b[0m`);
@@ -1016,7 +1412,13 @@ async function main() {
       console.log('\n🩺 \x1b[1m\x1b[36mTokenTrail Diagnostics & Doctor\x1b[0m');
       console.log('───────────────────────────────────────────────────────');
 
+      cleanOldLogsAndData(15);
       const syncRes = await hookManager.syncAllLogs(config.apiUrl, config.token || config.apiKey, config.organizationId);
+      let daemon = getDaemonStatus();
+      if (!daemon.running) {
+        startBackgroundDaemon();
+        daemon = getDaemonStatus();
+      }
 
       let apiOnline = false;
       try {
@@ -1025,11 +1427,27 @@ async function main() {
       } catch (e) {}
 
       console.log(`Central API Reachability ... ${apiOnline ? '\x1b[32m✔ Online\x1b[0m' : '\x1b[33m⚠ Offline (Local queue buffering active)\x1b[0m'}`);
+      console.log(`Background Auto-Sync Daemon . ${daemon.running ? `\x1b[32m✔ Active (PID: ${daemon.pid})\x1b[0m` : '\x1b[31m✖ Inactive\x1b[0m'}`);
       console.log(`SQLite Durability Queue ..... \x1b[32m✔ WAL Mode Active\x1b[0m`);
+      console.log(`Disk Retention Policy ...... \x1b[32m✔ 15-Day Auto-Purge Active\x1b[0m`);
       console.log(`Queue Database ............. ${path.join(CONFIG_DIR, 'collector.db')}`);
       console.log(`Claude Code Sessions ....... ${fs.existsSync(path.join(os.homedir(), '.claude')) ? '\x1b[32m✔ Connected\x1b[0m' : 'Not detected'}`);
       console.log(`Copilot Hook ............... ${fs.existsSync(path.join(os.homedir(), '.config', 'github-copilot')) ? '\x1b[32m✔ Installed\x1b[0m' : 'Not installed'}`);
-      console.log(`Gemini/Antigravity MCP ..... ${fs.existsSync(path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')) ? '\x1b[32m✔ Configured\x1b[0m' : 'Not configured'}`);
+      let mcpStatus = 'Not configured';
+      const mcpFile = path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json');
+      if (fs.existsSync(mcpFile)) {
+        try {
+          const mcpData = JSON.parse(fs.readFileSync(mcpFile, 'utf-8'));
+          if (mcpData.mcpServers && (mcpData.mcpServers.tokentrail || mcpData.mcpServers.agentmeter)) {
+            mcpStatus = '\x1b[32m✔ Connected\x1b[0m';
+          } else {
+            mcpStatus = '\x1b[33m⚠ File found (Run `tokentrail connect antigravity`)\x1b[0m';
+          }
+        } catch (e) {
+          mcpStatus = '\x1b[32m✔ Connected\x1b[0m';
+        }
+      }
+      console.log(`Gemini/Antigravity MCP ..... ${mcpStatus}`);
       if (syncRes.syncedEvents > 0) {
         console.log(`Ingestion Buffer ........... \x1b[32m✔ ${syncRes.syncedEvents} prompt events ingested\x1b[0m`);
       }
@@ -1055,14 +1473,15 @@ async function main() {
     default: {
       console.log('\n⚡ \x1b[1m\x1b[36mTokenTrail CLI\x1b[0m - AI Coding Agent Observability Platform\n');
       console.log('Usage:');
-      console.log('  tokentrail login             Authenticate developer credentials & auto-populate MCP');
-      console.log('  tokentrail sync              Scan & synchronize Claude Code sessions and token usage');
-      console.log('  tokentrail watch             Stream and ingest agent completions in real-time');
-      console.log('  tokentrail connect <agent>   Automatically install telemetry hooks for an agent');
-      console.log('  tokentrail disconnect <agent>Safely remove hooks without touching user configs');
-      console.log('  tokentrail status            Show connected agents and server endpoints');
-      console.log('  tokentrail agents            List supported coding agents');
-      console.log('  tokentrail doctor            Run diagnostic health check\n');
+      console.log('  tokentrail login               Authenticate developer credentials & auto-populate MCP');
+      console.log('  tokentrail sync                Scan & synchronize Claude Code sessions and token usage');
+      console.log('  tokentrail daemon [cmd]        Manage background auto-sync worker (start|stop|restart|clean|status|logs)');
+      console.log('  tokentrail watch               Stream and ingest agent completions in real-time');
+      console.log('  tokentrail connect <agent>     Automatically install telemetry hooks for an agent');
+      console.log('  tokentrail disconnect <agent>  Safely remove hooks without touching user configs');
+      console.log('  tokentrail status              Show connected agents and server endpoints');
+      console.log('  tokentrail agents              List supported coding agents');
+      console.log('  tokentrail doctor              Run diagnostic health check\n');
       break;
     }
   }

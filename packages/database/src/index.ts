@@ -145,6 +145,10 @@ export interface ISession extends Document {
   totalCostUsd: number;
   requestCount: number;
   status: 'active' | 'completed' | 'error';
+  sessionGoal?: string;
+  initialPrompt?: string;
+  lastPrompt?: string;
+  summary?: string;
   metadata?: Record<string, any>;
 }
 
@@ -161,6 +165,10 @@ export const SessionSchema = new Schema<ISession>({
   totalCostUsd: { type: Number, default: 0 },
   requestCount: { type: Number, default: 0 },
   status: { type: String, enum: ['active', 'completed', 'error'], default: 'active' },
+  sessionGoal: { type: String },
+  initialPrompt: { type: String },
+  lastPrompt: { type: String },
+  summary: { type: String },
   metadata: { type: Schema.Types.Mixed },
 }, { timestamps: true });
 
@@ -177,6 +185,9 @@ export interface IUsageEvent {
   userId?: string;
   projectId?: string;
   sessionId?: string;
+  userPrompt?: string;
+  actionSummary?: string;
+  sessionGoal?: string;
   agent: {
     id?: string;
     name: string;
@@ -220,6 +231,9 @@ export const UsageEventSchema = new Schema<IUsageEvent>({
   userId: { type: String },
   projectId: { type: String },
   sessionId: { type: String },
+  userPrompt: { type: String },
+  actionSummary: { type: String },
+  sessionGoal: { type: String },
   agent: {
     id: { type: String },
     name: { type: String, required: true },

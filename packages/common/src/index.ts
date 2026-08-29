@@ -45,24 +45,29 @@ export function formatNumber(num: number): string {
 export function sanitizeMetadata(metadata?: Record<string, unknown>, privacyLevel: number = 1): Record<string, unknown> | undefined {
   if (!metadata) return undefined;
   if (privacyLevel === 1) {
-    // Level 1: Strict metadata only - strip out code, prompts, command bodies, file contents
+    // Level 1: Standard metadata - preserves session intent, prompt snippets, tools, and action summaries while stripping raw secrets/apiKeys
     const safe: Record<string, unknown> = {};
-    const safeKeys = ['task_id', 'agent_version', 'cli_version', 'tool', 'mode', 'platform', 'os', 'branch'];
+    const safeKeys = [
+      'task_id', 'agent_version', 'cli_version', 'tool', 'tools', 'toolCount', 'mode', 'platform', 'os', 'branch',
+      'userPrompt', 'prompt', 'promptSnippet', 'actionSummary', 'summary', 'taskDescription', 'sessionGoal',
+      'stepType', 'stepIndex', 'thinkingSnippet', 'turnId', 'status'
+    ];
     for (const key of Object.keys(metadata)) {
       if (safeKeys.includes(key) || key.endsWith('_count') || key.endsWith('_id') || key.endsWith('_type')) {
         safe[key] = metadata[key];
       }
     }
+    delete safe.secret;
+    delete safe.apiKey;
+    delete safe.password;
     return safe;
   }
   if (privacyLevel === 2) {
-    // Level 2: Command / file-count metadata allowed
+    // Level 2: Standard metadata without raw code or secret keys
     const safe = { ...metadata };
-    delete safe.prompt;
-    delete safe.response;
-    delete safe.code;
     delete safe.secret;
     delete safe.apiKey;
+    delete safe.password;
     return safe;
   }
   // Level 3: Full (Explicit opt-in)

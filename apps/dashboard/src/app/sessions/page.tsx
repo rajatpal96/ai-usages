@@ -39,7 +39,10 @@ export default function SessionsPage() {
     return (
       s.sessionId?.toLowerCase().includes(search.toLowerCase()) ||
       s.agentName?.toLowerCase().includes(search.toLowerCase()) ||
-      s.projectId?.toLowerCase().includes(search.toLowerCase())
+      s.projectId?.toLowerCase().includes(search.toLowerCase()) ||
+      s.sessionGoal?.toLowerCase().includes(search.toLowerCase()) ||
+      s.userPrompt?.toLowerCase().includes(search.toLowerCase()) ||
+      s.actionSummary?.toLowerCase().includes(search.toLowerCase())
     );
   });
 
@@ -63,7 +66,7 @@ export default function SessionsPage() {
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
             <input
               type="text"
-              placeholder="Search by session ID, repo or agent..."
+              placeholder="Search by session ID, goal, prompt, or repo..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
@@ -93,7 +96,7 @@ export default function SessionsPage() {
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-950/80 border-b border-slate-800/80 text-slate-400 font-semibold uppercase tracking-wider">
                 <tr>
-                  <th className="px-6 py-4">Session ID</th>
+                  <th className="px-6 py-4">Session / Goal</th>
                   <th className="px-6 py-4">Agent</th>
                   <th className="px-6 py-4">Project / Repo</th>
                   <th className="px-6 py-4">Duration</th>
@@ -111,43 +114,53 @@ export default function SessionsPage() {
                     </td>
                   </tr>
                 ) : (
-                  filtered.map((s) => (
-                    <tr key={s.sessionId} className="hover:bg-slate-900/40 transition-colors group">
-                      <td className="px-6 py-4 font-mono font-semibold text-indigo-400 flex items-center gap-2">
-                        <Terminal className="w-3.5 h-3.5 text-slate-400" />
-                        {s.sessionId}
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className="px-2.5 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300 font-medium font-mono text-[11px]">
-                          {s.agentName}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-slate-300 font-mono">
-                        {s.projectId || 'main-repo'}
-                      </td>
-                      <td className="px-6 py-4 text-slate-400">
-                        {Math.round((s.durationMs || 1000) / 1000)}s
-                      </td>
-                      <td className="px-6 py-4 text-slate-300 font-mono">
-                        {s.requestCount || 1}
-                      </td>
-                      <td className="px-6 py-4 font-mono font-medium text-slate-200">
-                        {formatNumber(s.totalTokens || 0)}
-                      </td>
-                      <td className="px-6 py-4 font-mono font-bold text-emerald-400">
-                        {formatCurrency(s.totalCostUsd || 0)}
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <Link
-                          href={`/sessions/${s.sessionId}`}
-                          className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 font-medium transition-all"
-                        >
-                          Timeline
-                          <ChevronRight className="w-3.5 h-3.5" />
-                        </Link>
-                      </td>
-                    </tr>
-                  ))
+                  filtered.map((s) => {
+                    const goal = s.sessionGoal || s.userPrompt || s.actionSummary;
+                    return (
+                      <tr key={s.sessionId} className="hover:bg-slate-900/40 transition-colors group">
+                        <td className="px-6 py-4 max-w-xs sm:max-w-md">
+                          <div className="font-mono font-semibold text-indigo-400 flex items-center gap-2">
+                            <Terminal className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+                            <span className="truncate">{s.sessionId}</span>
+                          </div>
+                          {goal && (
+                            <p className="text-[11px] text-slate-400 line-clamp-1 mt-1 font-sans pl-5.5">
+                              {goal}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className="px-2.5 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300 font-medium font-mono text-[11px]">
+                            {s.agentName}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-slate-300 font-mono whitespace-nowrap">
+                          {s.projectId || 'main-repo'}
+                        </td>
+                        <td className="px-6 py-4 text-slate-400 whitespace-nowrap">
+                          {Math.round((s.durationMs || 1000) / 1000)}s
+                        </td>
+                        <td className="px-6 py-4 text-slate-300 font-mono whitespace-nowrap">
+                          {s.eventCount || s.requestCount || 1}
+                        </td>
+                        <td className="px-6 py-4 font-mono font-medium text-slate-200 whitespace-nowrap">
+                          {formatNumber(s.totalTokens || 0)}
+                        </td>
+                        <td className="px-6 py-4 font-mono font-bold text-emerald-400 whitespace-nowrap">
+                          {formatCurrency(s.totalCostUsd || 0)}
+                        </td>
+                        <td className="px-6 py-4 text-right whitespace-nowrap">
+                          <Link
+                            href={`/sessions/${s.sessionId}`}
+                            className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 font-medium transition-all"
+                          >
+                            Timeline
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

@@ -56,6 +56,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       userId: context.userId || payload.userId,
       projectId: context.projectId || payload.projectId,
       sessionId: context.sessionId || payload.sessionId || `sess_${uuidv4().slice(0, 8)}`,
+      userPrompt: payload.userPrompt || payload.prompt || payload.metadata?.userPrompt || payload.metadata?.prompt,
+      actionSummary: payload.actionSummary || payload.summary || payload.metadata?.actionSummary || payload.metadata?.summary,
+      sessionGoal: payload.sessionGoal || payload.initialPrompt || payload.metadata?.sessionGoal || payload.metadata?.initialPrompt,
       agent: {
         id: payload.agent?.id || 'agent_claude_code',
         name: 'claude-code',
@@ -123,6 +126,9 @@ export class CopilotAdapter implements AgentAdapter {
       userId: context.userId || payload.userId || payload.githubUsername,
       projectId: context.projectId || payload.projectId || payload.repository,
       sessionId: context.sessionId || payload.sessionId || `sess_${uuidv4().slice(0, 8)}`,
+      userPrompt: payload.userPrompt || payload.prompt || payload.metadata?.userPrompt || payload.metadata?.prompt,
+      actionSummary: payload.actionSummary || payload.summary || payload.metadata?.actionSummary || payload.metadata?.summary,
+      sessionGoal: payload.sessionGoal || payload.initialPrompt || payload.metadata?.sessionGoal || payload.metadata?.initialPrompt,
       agent: {
         id: payload.agent?.id || 'agent_copilot',
         name: 'github-copilot',
@@ -193,6 +199,9 @@ export class GeminiAntigravityAdapter implements AgentAdapter {
       userId: context.userId || payload.userId,
       projectId: context.projectId || payload.projectId,
       sessionId: context.sessionId || payload.sessionId || `sess_${uuidv4().slice(0, 8)}`,
+      userPrompt: payload.userPrompt || payload.prompt || payload.metadata?.userPrompt || payload.metadata?.prompt,
+      actionSummary: payload.actionSummary || payload.summary || payload.metadata?.actionSummary || payload.metadata?.summary,
+      sessionGoal: payload.sessionGoal || payload.initialPrompt || payload.metadata?.sessionGoal || payload.metadata?.initialPrompt,
       agent: {
         id: payload.agent?.id || 'agent_antigravity',
         name: 'gemini-antigravity',
@@ -261,6 +270,9 @@ export class CodexAdapter implements AgentAdapter {
       userId: context.userId || payload.userId,
       projectId: context.projectId || payload.projectId,
       sessionId: context.sessionId || payload.sessionId || `sess_${uuidv4().slice(0, 8)}`,
+      userPrompt: payload.userPrompt || payload.prompt || payload.metadata?.userPrompt || payload.metadata?.prompt,
+      actionSummary: payload.actionSummary || payload.summary || payload.metadata?.actionSummary || payload.metadata?.summary,
+      sessionGoal: payload.sessionGoal || payload.initialPrompt || payload.metadata?.sessionGoal || payload.metadata?.initialPrompt,
       agent: {
         id: payload.agent?.id || 'agent_codex',
         name: 'codex',
@@ -325,6 +337,9 @@ export class GrokAdapter implements AgentAdapter {
       userId: context.userId || payload.userId,
       projectId: context.projectId || payload.projectId,
       sessionId: context.sessionId || payload.sessionId || `sess_${uuidv4().slice(0, 8)}`,
+      userPrompt: payload.userPrompt || payload.prompt || payload.metadata?.userPrompt || payload.metadata?.prompt,
+      actionSummary: payload.actionSummary || payload.summary || payload.metadata?.actionSummary || payload.metadata?.summary,
+      sessionGoal: payload.sessionGoal || payload.initialPrompt || payload.metadata?.sessionGoal || payload.metadata?.initialPrompt,
       agent: {
         id: payload.agent?.id || 'agent_grok',
         name: 'grok',
@@ -395,6 +410,9 @@ export class GenericProxyAdapter implements AgentAdapter {
       userId: context.userId || payload.userId,
       projectId: context.projectId || payload.projectId,
       sessionId: context.sessionId || payload.sessionId || `sess_${uuidv4().slice(0, 8)}`,
+      userPrompt: payload.userPrompt || payload.prompt || payload.metadata?.userPrompt || payload.metadata?.prompt,
+      actionSummary: payload.actionSummary || payload.summary || payload.metadata?.actionSummary || payload.metadata?.summary,
+      sessionGoal: payload.sessionGoal || payload.initialPrompt || payload.metadata?.sessionGoal || payload.metadata?.initialPrompt,
       agent: {
         id: payload.agent?.id || `agent_${agentName.replace(/[^a-zA-Z0-9_]/g, '_')}`,
         name: agentName,

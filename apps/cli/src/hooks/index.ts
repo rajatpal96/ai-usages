@@ -298,25 +298,69 @@ export class SafeHookManager {
         } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
           try {
             const lines = fs.readFileSync(fullPath, 'utf-8').split('\n').filter(Boolean);
+            let sessionGoal = '';
+            let currentPrompt = '';
+
             for (const line of lines) {
               const data = JSON.parse(line);
+              if (data.type === 'user' && data.message) {
+                let p = '';
+                if (typeof data.message.content === 'string') p = data.message.content.trim();
+                else if (Array.isArray(data.message.content)) {
+                  p = data.message.content.filter((b: any) => b && (b.type === 'text' || b.text)).map((b: any) => b.text || '').join(' ').trim();
+                }
+                if (p && !sessionGoal) {
+                  sessionGoal = p;
+                }
+              }
+            }
+
+            for (const line of lines) {
+              const data = JSON.parse(line);
+              if (data.type === 'user' && data.message) {
+                let p = '';
+                if (typeof data.message.content === 'string') p = data.message.content.trim();
+                else if (Array.isArray(data.message.content)) {
+                  p = data.message.content.filter((b: any) => b && (b.type === 'text' || b.text)).map((b: any) => b.text || '').join(' ').trim();
+                }
+                if (p) {
+                  currentPrompt = p;
+                }
+              }
+
               if (data.type === 'assistant' && data.message && data.message.usage) {
                 const turnId = data.message.id || data.uuid || `${data.sessionId}_${data.timestamp}`;
                 if (syncedIds[turnId]) continue;
 
                 const toolsUsed: string[] = [];
                 let thinkingText = '';
+                let actionSummary = '';
                 if (Array.isArray(data.message.content)) {
+                  const toolDetails: string[] = [];
+                  let text = '';
                   for (const block of data.message.content) {
                     if (block.type === 'tool_use' && block.name) {
                       toolsUsed.push(block.name);
+                      const inp = block.input || {};
+                      if (block.name === 'Bash' && inp.command) toolDetails.push(`Bash: ${inp.command.slice(0, 50)}`);
+                      else if (block.name === 'Edit' && inp.file_path) toolDetails.push(`Edit ${path.basename(inp.file_path)}`);
+                      else if (block.name === 'Write' && inp.file_path) toolDetails.push(`Write ${path.basename(inp.file_path)}`);
+                      else if (block.name === 'ReadDir' && inp.path) toolDetails.push(`Read ${path.basename(inp.path)}`);
+                      else if (block.name === 'Grep' && inp.pattern) toolDetails.push(`Grep "${inp.pattern}"`);
+                      else toolDetails.push(block.name);
                     }
                     if (block.type === 'thinking' && block.thinking) {
-                      thinkingText = block.thinking.slice(0, 200);
+                      thinkingText = block.thinking.slice(0, 250);
+                    }
+                    if (block.type === 'text' && block.text && !text) {
+                      text = block.text.trim().slice(0, 160);
                     }
                   }
+                  if (toolDetails.length > 0) actionSummary = toolDetails.join(' • ');
+                  else if (text) actionSummary = text;
                 }
 
+                if (!actionSummary) actionSummary = 'Assistant Response';
                 if (eventsMap.has(turnId)) continue;
 
                 const inputTokens = data.message.usage.input_tokens || 0;
@@ -329,6 +373,7 @@ export class SafeHookManager {
                 if (data.sessionId) sessionSet.add(data.sessionId);
 
                 const projectName = data.cwd ? path.basename(data.cwd) : 'default';
+                const resolvedPrompt = currentPrompt || sessionGoal;
 
                 eventsMap.set(turnId, {
                   eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
@@ -337,6 +382,9 @@ export class SafeHookManager {
                   userId: 'developer',
                   projectId: projectName,
                   sessionId: data.sessionId || 'claude_session',
+                  userPrompt: resolvedPrompt || undefined,
+                  actionSummary,
+                  sessionGoal: sessionGoal || undefined,
                   agent: {
                     id: 'claude-code',
                     name: 'claude-code',
@@ -359,6 +407,9 @@ export class SafeHookManager {
                   metadata: {
                     cwd: data.cwd,
                     projectName,
+                    userPrompt: resolvedPrompt || undefined,
+                    actionSummary,
+                    sessionGoal: sessionGoal || undefined,
                     tools: toolsUsed,
                     toolCount: toolsUsed.length,
                     stopReason: data.message.stop_reason,
@@ -386,8 +437,8 @@ export class SafeHookManager {
 
       const ingestEndpoint = `${apiUrl}/v1/events/batch`;
       const effectiveAuth = tokenOrKey || '';
-      for (let i = 0; i < eventsToUpload.length; i += 50) {
-        const batch = eventsToUpload.slice(i, i + 50);
+      for (let i = 0; i < eventsToUpload.length; i += 10) {
+        const batch = eventsToUpload.slice(i, i + 10);
         try {
           await fetch(ingestEndpoint, {
             method: 'POST',
@@ -423,6 +474,37 @@ export class SafeHookManager {
       } catch (e) {}
     }
 
+    const cleanPrompt = (raw: string): string => {
+      if (!raw || typeof raw !== 'string') return '';
+      const match = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+      return raw.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '').trim().slice(0, 400);
+    };
+
+    const formatActionSummary = (step: any): string => {
+      if (step.tool_calls && Array.isArray(step.tool_calls) && step.tool_calls.length > 0) {
+        const summaries = step.tool_calls.map((tc: any) => {
+          const args = tc.args || {};
+          if (tc.name === 'run_command') return `Command: ${args.CommandLine || args.command || 'exec'}`;
+          if (tc.name === 'replace_file_content' || tc.name === 'write_to_file' || tc.name === 'multi_replace_file_content') {
+            const file = args.TargetFile ? path.basename(args.TargetFile) : 'file';
+            return `Edit ${file}: ${args.Instruction || args.Description || ''}`.trim();
+          }
+          if (tc.name === 'view_file') return `View ${args.AbsolutePath ? path.basename(args.AbsolutePath) : 'file'}`;
+          if (tc.name === 'grep_search') return `Search: "${args.Query || ''}"`;
+          if (tc.name === 'list_dir') return `List ${args.DirectoryPath ? path.basename(args.DirectoryPath) : 'dir'}`;
+          return tc.name;
+        });
+        return summaries.join(' • ');
+      }
+      if (step.content && typeof step.content === 'string') {
+        return step.content.replace(/<[^>]+>/g, '').trim().slice(0, 180);
+      }
+      return 'Assistant Turn';
+    };
+
     const eventsMap = new Map<string, any>();
     let totalTokens = 0;
     const sessionSet = new Set<string>();
@@ -442,10 +524,18 @@ export class SafeHookManager {
             const lines = rawContent.split('\n').filter(Boolean);
             let inferredProject = 'default';
             let activeModel = 'gemini-2.5-pro';
+            let sessionGoal = '';
+            let currentPrompt = '';
 
             for (const line of lines) {
               try {
                 const step = JSON.parse(line);
+                if (step.type === 'USER_INPUT' || step.source === 'USER_EXPLICIT') {
+                  const p = cleanPrompt(step.content);
+                  if (p && !sessionGoal) {
+                    sessionGoal = p;
+                  }
+                }
                 if (step.content && typeof step.content === 'string') {
                   if (step.content.includes('Model Selection') || step.content.includes('Gemini')) {
                     const match = step.content.match(/Gemini\s+([0-9\.\w\-]+)/i);
@@ -464,7 +554,14 @@ export class SafeHookManager {
             for (const line of lines) {
               try {
                 const step = JSON.parse(line);
-                if (step.source === 'MODEL' || step.type === 'PLANNER_RESPONSE') {
+                if (step.type === 'USER_INPUT' || step.source === 'USER_EXPLICIT') {
+                  const p = cleanPrompt(step.content);
+                  if (p) {
+                    currentPrompt = p;
+                  }
+                }
+
+                if (step.source === 'MODEL' || step.type === 'PLANNER_RESPONSE' || step.type === 'ERROR_MESSAGE' || step.type === 'CODE_ACTION' || step.type === 'RUN_COMMAND') {
                   const stepIndex = step.step_index !== undefined ? step.step_index : Math.random().toString(36).substring(7);
                   const turnId = `agy_${convId}_${stepIndex}`;
                   if (syncedIds[turnId]) continue;
@@ -478,7 +575,7 @@ export class SafeHookManager {
 
                   let thinkingText = step.thinking || '';
                   if (!thinkingText && step.content && typeof step.content === 'string') {
-                    thinkingText = step.content.slice(0, 200);
+                    thinkingText = step.content.slice(0, 250);
                   }
 
                   const promptChars = step.prompt_length || 3500;
@@ -487,8 +584,9 @@ export class SafeHookManager {
                   const outputTokens = step.usage?.output_tokens || step.usage?.outputTokens || Math.max(120, Math.round(contentChars / 4));
                   const total = inputTokens + outputTokens;
 
-                  totalTokens += total;
+                  const actionSummary = formatActionSummary(step);
                   sessionSet.add(convId);
+                  const resolvedPrompt = currentPrompt || sessionGoal;
 
                   eventsMap.set(turnId, {
                     eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
@@ -497,6 +595,9 @@ export class SafeHookManager {
                     userId: 'developer',
                     projectId: inferredProject,
                     sessionId: convId,
+                    userPrompt: resolvedPrompt || undefined,
+                    actionSummary,
+                    sessionGoal: sessionGoal || undefined,
                     agent: {
                       id: 'gemini-antigravity',
                       name: 'gemini-antigravity',
@@ -517,15 +618,21 @@ export class SafeHookManager {
                       totalTokens: total,
                     },
                     metadata: {
+                      userPrompt: resolvedPrompt || undefined,
+                      actionSummary,
+                      sessionGoal: sessionGoal || undefined,
                       stepIndex: step.step_index,
+                      stepType: step.type,
                       tools: toolsUsed,
                       toolCount: toolsUsed.length,
-                      status: step.status || 'DONE',
-                      thinkingSnippet: thinkingText ? thinkingText.slice(0, 200) : undefined,
+                      status: step.status || (step.type === 'ERROR_MESSAGE' ? 'ERROR' : 'DONE'),
+                      thinkingSnippet: thinkingText ? thinkingText.slice(0, 250) : undefined,
                       turnId,
                     },
-                    status: 'success',
+                    status: step.type === 'ERROR_MESSAGE' || step.status === 'ERROR' ? 'error' : 'success',
                   });
+
+                  totalTokens += total;
                 }
               } catch (e) {}
             }
@@ -544,8 +651,8 @@ export class SafeHookManager {
 
       const ingestEndpoint = `${apiUrl}/v1/events/batch`;
       const effectiveAuth = tokenOrKey || '';
-      for (let i = 0; i < eventsToUpload.length; i += 50) {
-        const batch = eventsToUpload.slice(i, i + 50);
+      for (let i = 0; i < eventsToUpload.length; i += 10) {
+        const batch = eventsToUpload.slice(i, i + 10);
         try {
           await fetch(ingestEndpoint, {
             method: 'POST',

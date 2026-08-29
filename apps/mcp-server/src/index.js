@@ -52,6 +52,37 @@ function startBackgroundAgentWatcher() {
 
     const eventsMap = new Map();
 
+    const cleanPrompt = (raw) => {
+      if (!raw || typeof raw !== 'string') return '';
+      const match = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+      return raw.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '').trim().slice(0, 400);
+    };
+
+    const formatActionSummary = (step) => {
+      if (step.tool_calls && Array.isArray(step.tool_calls) && step.tool_calls.length > 0) {
+        const summaries = step.tool_calls.map((tc) => {
+          const args = tc.args || {};
+          if (tc.name === 'run_command') return `Command: ${args.CommandLine || args.command || 'exec'}`;
+          if (tc.name === 'replace_file_content' || tc.name === 'write_to_file' || tc.name === 'multi_replace_file_content') {
+            const file = args.TargetFile ? path.basename(args.TargetFile) : 'file';
+            return `Edit ${file}: ${args.Instruction || args.Description || ''}`.trim();
+          }
+          if (tc.name === 'view_file') return `View ${args.AbsolutePath ? path.basename(args.AbsolutePath) : 'file'}`;
+          if (tc.name === 'grep_search') return `Search: "${args.Query || ''}"`;
+          if (tc.name === 'list_dir') return `List ${args.DirectoryPath ? path.basename(args.DirectoryPath) : 'dir'}`;
+          return tc.name;
+        });
+        return summaries.join(' • ');
+      }
+      if (step.content && typeof step.content === 'string') {
+        return step.content.replace(/<[^>]+>/g, '').trim().slice(0, 180);
+      }
+      return 'Assistant Turn';
+    };
+
     // 1. Scan Claude Code
     if (fs.existsSync(claudeProjectsDir)) {
       function scanClaudeDir(dir) {
@@ -64,12 +95,57 @@ function startBackgroundAgentWatcher() {
             } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
               try {
                 const lines = fs.readFileSync(fullPath, 'utf-8').split('\n').filter(Boolean);
+                let sessionGoal = '';
+                let currentPrompt = '';
+
                 for (const line of lines) {
                   const data = JSON.parse(line);
+                  if (data.type === 'user' && data.message) {
+                    let p = '';
+                    if (typeof data.message.content === 'string') p = data.message.content.trim();
+                    else if (Array.isArray(data.message.content)) {
+                      p = data.message.content.filter((b) => b && (b.type === 'text' || b.text)).map((b) => b.text || '').join(' ').trim();
+                    }
+                    if (p) {
+                      if (!sessionGoal) sessionGoal = p;
+                      currentPrompt = p;
+                    }
+                  }
+
                   if (data.type === 'assistant' && data.message && data.message.usage) {
                     const turnId = data.message.id || data.uuid || `${data.sessionId}_${data.timestamp}`;
                     if (claudeSyncedIds[turnId]) continue;
                     if (eventsMap.has(turnId)) continue;
+
+                    const toolsUsed = [];
+                    let thinkingText = '';
+                    let actionSummary = '';
+                    if (Array.isArray(data.message.content)) {
+                      const toolDetails = [];
+                      let text = '';
+                      for (const block of data.message.content) {
+                        if (block.type === 'tool_use' && block.name) {
+                          toolsUsed.push(block.name);
+                          const inp = block.input || {};
+                          if (block.name === 'Bash' && inp.command) toolDetails.push(`Bash: ${inp.command.slice(0, 50)}`);
+                          else if (block.name === 'Edit' && inp.file_path) toolDetails.push(`Edit ${path.basename(inp.file_path)}`);
+                          else if (block.name === 'Write' && inp.file_path) toolDetails.push(`Write ${path.basename(inp.file_path)}`);
+                          else if (block.name === 'ReadDir' && inp.path) toolDetails.push(`Read ${path.basename(inp.path)}`);
+                          else if (block.name === 'Grep' && inp.pattern) toolDetails.push(`Grep "${inp.pattern}"`);
+                          else toolDetails.push(block.name);
+                        }
+                        if (block.type === 'thinking' && block.thinking) {
+                          thinkingText = block.thinking.slice(0, 250);
+                        }
+                        if (block.type === 'text' && block.text && !text) {
+                          text = block.text.trim().slice(0, 160);
+                        }
+                      }
+                      if (toolDetails.length > 0) actionSummary = toolDetails.join(' • ');
+                      else if (text) actionSummary = text;
+                    }
+
+                    if (!actionSummary) actionSummary = 'Assistant Response';
 
                     const inputTokens = data.message.usage.input_tokens || 0;
                     const outputTokens = data.message.usage.output_tokens || 0;
@@ -85,6 +161,9 @@ function startBackgroundAgentWatcher() {
                       userId: 'developer',
                       projectId: projectName,
                       sessionId: data.sessionId || 'claude_session',
+                      userPrompt: currentPrompt || undefined,
+                      actionSummary,
+                      sessionGoal: sessionGoal || undefined,
                       agent: {
                         id: 'claude-code',
                         name: 'claude-code',
@@ -99,6 +178,15 @@ function startBackgroundAgentWatcher() {
                         cacheReadTokens: cacheRead,
                         cacheWriteTokens: cacheWrite,
                         totalTokens: total,
+                      },
+                      metadata: {
+                        userPrompt: currentPrompt || undefined,
+                        actionSummary,
+                        sessionGoal: sessionGoal || undefined,
+                        tools: toolsUsed,
+                        toolCount: toolsUsed.length,
+                        thinkingSnippet: thinkingText || undefined,
+                        turnId,
                       },
                       status: 'success',
                     });
@@ -128,6 +216,8 @@ function startBackgroundAgentWatcher() {
             const lines = rawContent.split('\n').filter(Boolean);
             let inferredProject = 'default';
             let activeModel = 'gemini-2.5-pro';
+            let sessionGoal = '';
+            let currentPrompt = '';
 
             for (const line of lines) {
               try {
@@ -150,7 +240,15 @@ function startBackgroundAgentWatcher() {
             for (const line of lines) {
               try {
                 const step = JSON.parse(line);
-                if (step.source === 'MODEL' || step.type === 'PLANNER_RESPONSE') {
+                if (step.type === 'USER_INPUT' || step.source === 'USER_EXPLICIT') {
+                  const p = cleanPrompt(step.content);
+                  if (p) {
+                    if (!sessionGoal) sessionGoal = p;
+                    currentPrompt = p;
+                  }
+                }
+
+                if (step.source === 'MODEL' || step.type === 'PLANNER_RESPONSE' || step.type === 'ERROR_MESSAGE' || step.type === 'CODE_ACTION' || step.type === 'RUN_COMMAND') {
                   const stepIndex = step.step_index !== undefined ? step.step_index : Math.random().toString(36).substring(7);
                   const turnId = `agy_${convId}_${stepIndex}`;
                   if (agySyncedIds[turnId]) continue;
@@ -165,7 +263,7 @@ function startBackgroundAgentWatcher() {
 
                   let thinkingText = step.thinking || '';
                   if (!thinkingText && step.content && typeof step.content === 'string') {
-                    thinkingText = step.content.slice(0, 200);
+                    thinkingText = step.content.slice(0, 250);
                   }
 
                   const promptChars = step.prompt_length || 3500;
@@ -174,6 +272,8 @@ function startBackgroundAgentWatcher() {
                   const outputTokens = step.usage?.output_tokens || step.usage?.outputTokens || Math.max(120, Math.round(contentChars / 4));
                   const total = inputTokens + outputTokens;
 
+                  const actionSummary = formatActionSummary(step);
+
                   eventsMap.set(turnId, {
                     eventId: `evt_${turnId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
                     timestamp: step.created_at || new Date().toISOString(),
@@ -181,6 +281,9 @@ function startBackgroundAgentWatcher() {
                     userId: 'developer',
                     projectId: inferredProject,
                     sessionId: convId,
+                    userPrompt: currentPrompt || undefined,
+                    actionSummary,
+                    sessionGoal: sessionGoal || undefined,
                     agent: {
                       id: 'gemini-antigravity',
                       name: 'gemini-antigravity',
@@ -197,14 +300,18 @@ function startBackgroundAgentWatcher() {
                       totalTokens: total,
                     },
                     metadata: {
+                      userPrompt: currentPrompt || undefined,
+                      actionSummary,
+                      sessionGoal: sessionGoal || undefined,
                       stepIndex: step.step_index,
+                      stepType: step.type,
                       tools: toolsUsed,
                       toolCount: toolsUsed.length,
-                      status: step.status || 'DONE',
-                      thinkingSnippet: thinkingText ? thinkingText.slice(0, 200) : undefined,
+                      status: step.status || (step.type === 'ERROR_MESSAGE' ? 'ERROR' : 'DONE'),
+                      thinkingSnippet: thinkingText ? thinkingText.slice(0, 250) : undefined,
                       turnId,
                     },
-                    status: 'success',
+                    status: step.type === 'ERROR_MESSAGE' || step.status === 'ERROR' ? 'error' : 'success',
                   });
                 }
               } catch (e) {}
@@ -221,8 +328,8 @@ function startBackgroundAgentWatcher() {
       }
       const ingestEndpoint = `${INGEST_BASE_URL}/v1/events/batch`;
       const authHeader = (MCP_ACCESS_TOKEN || API_KEY || '').trim();
-      for (let i = 0; i < eventsToUpload.length; i += 50) {
-        const batch = eventsToUpload.slice(i, i + 50);
+      for (let i = 0; i < eventsToUpload.length; i += 10) {
+        const batch = eventsToUpload.slice(i, i + 10);
         try {
           const resp = await fetch(ingestEndpoint, {
             method: 'POST',
